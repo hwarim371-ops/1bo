@@ -41,6 +41,8 @@ const seedState = {
   summaryTab: "total",
   summaryFocus: {},
   extraSummaryItems: [],
+  editingEntryId: "",
+  editingMaterialId: "",
   draft: [],
   config: normalizeConfig(sourceData.config),
   entries: normalizeEntries(sourceData.workEntries),
@@ -85,11 +87,26 @@ function cacheElements() {
     resourceRows: document.querySelector("#resourceRows"),
     entryMemo: document.querySelector("#entryMemo"),
     addDraftButton: document.querySelector("#addDraftButton"),
+    cancelEntryEditButton: document.querySelector("#cancelEntryEditButton"),
+    entrySubmitButton: document.querySelector("#entrySubmitButton"),
+    entrySyncButton: document.querySelector("#entrySyncButton"),
     draftTray: document.querySelector("#draftTray"),
     draftList: document.querySelector("#draftList"),
     draftCount: document.querySelector("#draftCount"),
     logDateFilter: document.querySelector("#logDateFilter"),
+    logEndDateFilter: document.querySelector("#logEndDateFilter"),
     logProcessFilter: document.querySelector("#logProcessFilter"),
+    logDateQuickFilter: document.querySelector("#logDateQuickFilter"),
+    logMainQuickFilter: document.querySelector("#logMainQuickFilter"),
+    logSubQuickFilter: document.querySelector("#logSubQuickFilter"),
+    logDetailFilter: document.querySelector("#logDetailFilter"),
+    logEquipmentFilter: document.querySelector("#logEquipmentFilter"),
+    logLaborFilter: document.querySelector("#logLaborFilter"),
+    logPaymentFilter: document.querySelector("#logPaymentFilter"),
+    logMemoFilter: document.querySelector("#logMemoFilter"),
+    logEditBar: document.querySelector("#logEditBar"),
+    logInlineSaveButton: document.querySelector("#logInlineSaveButton"),
+    logInlineCancelButton: document.querySelector("#logInlineCancelButton"),
     clearLogFilters: document.querySelector("#clearLogFilters"),
     logTableBody: document.querySelector("#logTableBody"),
     materialForm: document.querySelector("#materialForm"),
@@ -103,10 +120,24 @@ function cacheElements() {
     materialHighPrice: document.querySelector("#materialHighPrice"),
     materialCreditAmount: document.querySelector("#materialCreditAmount"),
     materialMemo: document.querySelector("#materialMemo"),
+    cancelMaterialEditButton: document.querySelector("#cancelMaterialEditButton"),
+    materialSubmitButton: document.querySelector("#materialSubmitButton"),
     materialList: document.querySelector("#materialList"),
     materialCount: document.querySelector("#materialCount"),
+    materialStartDateFilter: document.querySelector("#materialStartDateFilter"),
+    materialEndDateFilter: document.querySelector("#materialEndDateFilter"),
     materialProcessFilter: document.querySelector("#materialProcessFilter"),
+    materialDateQuickFilter: document.querySelector("#materialDateQuickFilter"),
+    materialProcessQuickFilter: document.querySelector("#materialProcessQuickFilter"),
+    materialProductFilter: document.querySelector("#materialProductFilter"),
+    materialVendorFilter: document.querySelector("#materialVendorFilter"),
+    materialAreaFilter: document.querySelector("#materialAreaFilter"),
+    materialMemoFilter: document.querySelector("#materialMemoFilter"),
     materialSearch: document.querySelector("#materialSearch"),
+    clearMaterialFilters: document.querySelector("#clearMaterialFilters"),
+    materialEditBar: document.querySelector("#materialEditBar"),
+    materialInlineSaveButton: document.querySelector("#materialInlineSaveButton"),
+    materialInlineCancelButton: document.querySelector("#materialInlineCancelButton"),
     materialTableBody: document.querySelector("#materialTableBody"),
     summaryStart: document.querySelector("#summaryStart"),
     summaryEnd: document.querySelector("#summaryEnd"),
@@ -120,6 +151,10 @@ function cacheElements() {
     summaryExtraAmount: document.querySelector("#summaryExtraAmount"),
     summaryExtraType: document.querySelector("#summaryExtraType"),
     summaryExtraList: document.querySelector("#summaryExtraList"),
+    projectAddForm: document.querySelector("#projectAddForm"),
+    newProjectName: document.querySelector("#newProjectName"),
+    newProjectEndpoint: document.querySelector("#newProjectEndpoint"),
+    projectSettings: document.querySelector("#projectSettings"),
     processSettings: document.querySelector("#processSettings"),
     processAddForm: document.querySelector("#processAddForm"),
     newProcessName: document.querySelector("#newProcessName"),
@@ -149,6 +184,8 @@ function bindEvents() {
 
   elements.projectSelect.addEventListener("change", () => {
     state.activeProject = elements.projectSelect.value;
+    state.editingEntryId = "";
+    state.editingMaterialId = "";
     saveState();
     renderAll();
   });
@@ -176,6 +213,10 @@ function bindEvents() {
   });
 
   elements.addDraftButton.addEventListener("click", () => {
+    if (state.editingEntryId) {
+      window.alert("수정 중에는 항목 추가를 사용할 수 없습니다. 수정 저장 또는 수정 취소를 먼저 해주세요.");
+      return;
+    }
     const entries = buildEntriesFromForm();
     if (!entries) return;
     state.draft.push(...entries);
@@ -190,11 +231,37 @@ function bindEvents() {
     await commitWorkEntries();
   });
 
+  elements.entrySyncButton.addEventListener("click", syncAllPending);
+  elements.cancelEntryEditButton.addEventListener("click", cancelEntryEdit);
+  elements.logInlineSaveButton.addEventListener("click", () => saveInlineEntry(elements.logTableBody.querySelector("[data-editing-entry]")));
+  elements.logInlineCancelButton.addEventListener("click", cancelEntryEdit);
   elements.logDateFilter.addEventListener("change", renderLogs);
+  elements.logEndDateFilter.addEventListener("change", renderLogs);
   elements.logProcessFilter.addEventListener("change", renderLogs);
+  [
+    elements.logDateQuickFilter,
+    elements.logMainQuickFilter,
+    elements.logSubQuickFilter,
+    elements.logDetailFilter,
+    elements.logEquipmentFilter,
+    elements.logLaborFilter,
+    elements.logPaymentFilter,
+    elements.logMemoFilter
+  ].forEach((input) => {
+    input.addEventListener(input.tagName === "INPUT" ? "input" : "change", renderLogs);
+  });
   elements.clearLogFilters.addEventListener("click", () => {
     elements.logDateFilter.value = "";
+    elements.logEndDateFilter.value = "";
     elements.logProcessFilter.value = "";
+    elements.logDateQuickFilter.value = "";
+    elements.logMainQuickFilter.value = "";
+    elements.logSubQuickFilter.value = "";
+    elements.logDetailFilter.value = "";
+    elements.logEquipmentFilter.value = "";
+    elements.logLaborFilter.value = "";
+    elements.logPaymentFilter.value = "";
+    elements.logMemoFilter.value = "";
     renderLogs();
   });
 
@@ -203,8 +270,36 @@ function bindEvents() {
     await commitMaterialOrder();
   });
 
+  elements.cancelMaterialEditButton.addEventListener("click", cancelMaterialEdit);
+  elements.materialInlineSaveButton.addEventListener("click", () => saveInlineMaterial(elements.materialTableBody.querySelector("[data-editing-material]")));
+  elements.materialInlineCancelButton.addEventListener("click", cancelMaterialEdit);
+  elements.materialStartDateFilter.addEventListener("change", renderMaterialTable);
+  elements.materialEndDateFilter.addEventListener("change", renderMaterialTable);
   elements.materialProcessFilter.addEventListener("change", renderMaterialTable);
+  [
+    elements.materialDateQuickFilter,
+    elements.materialProcessQuickFilter,
+    elements.materialProductFilter,
+    elements.materialVendorFilter,
+    elements.materialAreaFilter,
+    elements.materialMemoFilter
+  ].forEach((input) => {
+    input.addEventListener(input.tagName === "INPUT" ? "input" : "change", renderMaterialTable);
+  });
   elements.materialSearch.addEventListener("input", renderMaterialTable);
+  elements.clearMaterialFilters.addEventListener("click", () => {
+    elements.materialStartDateFilter.value = "";
+    elements.materialEndDateFilter.value = "";
+    elements.materialProcessFilter.value = "";
+    elements.materialDateQuickFilter.value = "";
+    elements.materialProcessQuickFilter.value = "";
+    elements.materialProductFilter.value = "";
+    elements.materialVendorFilter.value = "";
+    elements.materialAreaFilter.value = "";
+    elements.materialMemoFilter.value = "";
+    elements.materialSearch.value = "";
+    renderMaterialTable();
+  });
   elements.summaryStart.addEventListener("change", renderSummary);
   elements.summaryEnd.addEventListener("change", renderSummary);
   elements.summaryTabs.querySelectorAll("[data-summary-tab]").forEach((button) => {
@@ -231,6 +326,11 @@ function bindEvents() {
   });
 
   elements.restoreSyncButton.addEventListener("click", restoreFromGoogleSheet);
+
+  elements.projectAddForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    addProject();
+  });
 
   elements.processAddForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -283,6 +383,7 @@ function renderAll() {
   renderSummary();
   renderSettings();
   renderSyncState();
+  renderEditState();
 }
 
 function renderProjectOptions() {
@@ -312,9 +413,12 @@ function renderNavigation() {
 
 function setView(viewName) {
   state.activeView = views[viewName] ? viewName : "input";
+  if (state.activeView !== "logs") state.editingEntryId = "";
+  if (state.activeView !== "materials") state.editingMaterialId = "";
   saveState();
   renderNavigation();
   renderMetrics();
+  renderEditState();
 }
 
 function renderOptions() {
@@ -346,6 +450,38 @@ function fillSelect(select, values) {
   if (values.includes(current)) {
     select.value = current;
   }
+}
+
+function fillFilterSelect(select, values, allLabel = "전체") {
+  const current = select.value;
+  select.innerHTML = "";
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = allLabel;
+  select.append(allOption);
+  uniqueValues(values).forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.append(option);
+  });
+  if (Array.from(select.options).some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+function getSubProcesses(mainProcess) {
+  const process = state.config.processes.find((item) => item.name === mainProcess);
+  return process ? process.subs : [];
+}
+
+function optionsHtml(values, selected, labels = {}) {
+  const hasBlank = values.some((value) => value === "");
+  const list = hasBlank ? ["", ...uniqueValues(values)] : uniqueValues(values);
+  return list.map((value) => {
+    const text = labels[value] || value || "선택 안 함";
+    return `<option value="${escapeAttr(value)}" ${String(value) === String(selected || "") ? "selected" : ""}>${escapeHtml(text)}</option>`;
+  }).join("");
 }
 
 function setKind(kind) {
@@ -489,6 +625,38 @@ function buildEntriesFromForm() {
 }
 
 async function commitWorkEntries() {
+  if (state.editingEntryId) {
+    const entries = buildEntriesFromForm();
+    if (!entries) return;
+    if (entries.length !== 1) {
+      window.alert("수정은 한 항목씩 가능합니다. 투입 수를 1개로 맞춰주세요.");
+      return;
+    }
+    const original = state.entries.find((entry) => entry.id === state.editingEntryId);
+    const updated = {
+      ...entries[0],
+      id: state.editingEntryId,
+      createdAt: original?.createdAt || entries[0].createdAt,
+      updatedAt: new Date().toISOString(),
+      status: getSyncEndpoint() ? "sending" : "local"
+    };
+    state.entries = state.entries.map((entry) => entry.id === state.editingEntryId ? updated : entry);
+    state.editingEntryId = "";
+    saveState();
+    renderAll();
+
+    if (getSyncEndpoint()) {
+      const sent = await syncPayload("workEntries", [updated]);
+      updateEntrySyncStatus([updated], sent ? "sent" : "failed");
+      if (sent) await syncSharedBackup();
+    }
+
+    clearEntryDetailFields();
+    setView("logs");
+    renderAll();
+    return;
+  }
+
   if (state.draft.length === 0) {
     const entries = buildEntriesFromForm();
     if (!entries) return;
@@ -609,15 +777,34 @@ function setMetrics(labelA, valueA, labelB, valueB, labelC, valueC, labelD, valu
 }
 
 function renderLogs() {
-  const dateFilter = elements.logDateFilter.value;
+  const startFilter = elements.logDateFilter.value;
+  const endFilter = elements.logEndDateFilter.value;
   const processFilter = elements.logProcessFilter.value;
+  const quickDate = elements.logDateQuickFilter.value;
+  const quickMain = elements.logMainQuickFilter.value;
+  const quickSub = elements.logSubQuickFilter.value;
+  const detailText = elements.logDetailFilter.value.trim().toLowerCase();
+  const quickEquipment = elements.logEquipmentFilter.value;
+  const quickLabor = elements.logLaborFilter.value;
+  const quickPayment = elements.logPaymentFilter.value;
+  const memoText = elements.logMemoFilter.value.trim().toLowerCase();
   const canManage = state.role === "manager";
+  const sourceRows = projectEntries();
+  renderLogColumnFilters(sourceRows);
 
-  const rows = projectEntries().filter((entry) => {
-    const dateMatch = !dateFilter || entry.date === dateFilter;
+  const rows = sourceRows.filter((entry) => {
+    const dateMatch = (!startFilter || entry.date >= startFilter) && (!endFilter || entry.date <= endFilter);
+    const quickDateMatch = !quickDate || entry.date === quickDate;
     const processMatch = !processFilter || processFilter === "전체 공정" || entry.mainProcess === processFilter;
-    return dateMatch && processMatch;
-  });
+    const mainMatch = !quickMain || entry.mainProcess === quickMain;
+    const subMatch = !quickSub || entry.subProcess === quickSub;
+    const detailMatch = !detailText || String(entry.detailProcess || "").toLowerCase().includes(detailText);
+    const equipmentMatch = !quickEquipment || entry.equipment === quickEquipment;
+    const laborMatch = !quickLabor || entry.labor === quickLabor;
+    const paymentMatch = !quickPayment || entry.paymentStatus === quickPayment;
+    const memoMatch = !memoText || String(entry.memo || "").toLowerCase().includes(memoText);
+    return dateMatch && quickDateMatch && processMatch && mainMatch && subMatch && detailMatch && equipmentMatch && laborMatch && paymentMatch && memoMatch;
+  }).sort(compareDateAsc);
 
   elements.logTableBody.innerHTML = "";
 
@@ -630,6 +817,12 @@ function renderLogs() {
 
   rows.forEach((entry) => {
     const tr = document.createElement("tr");
+    if (state.editingEntryId === entry.id) {
+      tr.dataset.editingEntry = entry.id;
+      tr.innerHTML = renderEntryEditRow(entry);
+      elements.logTableBody.append(tr);
+      return;
+    }
     tr.innerHTML = `
       <td>${formatDate(entry.date)}</td>
       <td>${escapeHtml(entry.mainProcess)}</td>
@@ -645,29 +838,150 @@ function renderLogs() {
       <td><span class="status-badge ${entry.status === "failed" ? "pending" : "done"}">${syncLabels[entry.status] || entry.status}</span></td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage && entry.status !== "synced" ? "" : "disabled"}>X</button>
+          <button class="icon-btn" type="button" title="수정" data-edit="${entry.id}" ${canManage ? "" : "disabled"}>수정</button>
+          <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage ? "" : "disabled"}>X</button>
         </div>
       </td>
     `;
     elements.logTableBody.append(tr);
   });
 
+  elements.logTableBody.querySelectorAll("[data-edit]").forEach((button) => {
+    button.addEventListener("click", () => beginEntryEdit(button.dataset.edit));
+  });
+  elements.logTableBody.querySelectorAll("[data-inline-main]").forEach((select) => {
+    select.addEventListener("change", () => refreshInlineSubProcess(select.closest("tr")));
+  });
+  elements.logTableBody.querySelectorAll("[data-save-entry]").forEach((button) => {
+    button.addEventListener("click", () => saveInlineEntry(button.closest("tr")));
+  });
+  elements.logTableBody.querySelectorAll("[data-cancel-entry]").forEach((button) => {
+    button.addEventListener("click", cancelEntryEdit);
+  });
   elements.logTableBody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteEntry(button.dataset.delete));
   });
 }
 
+function renderLogColumnFilters(rows) {
+  fillFilterSelect(elements.logDateQuickFilter, uniqueValues(rows.map((entry) => entry.date)), "전체 날짜");
+  fillFilterSelect(elements.logMainQuickFilter, uniqueValues(rows.map((entry) => entry.mainProcess)), "전체");
+  fillFilterSelect(elements.logSubQuickFilter, uniqueValues(rows.map((entry) => entry.subProcess)), "전체");
+  fillFilterSelect(elements.logEquipmentFilter, uniqueValues(rows.map((entry) => entry.equipment)), "전체");
+  fillFilterSelect(elements.logLaborFilter, uniqueValues(rows.map((entry) => entry.labor)), "전체");
+  fillFilterSelect(elements.logPaymentFilter, uniqueValues(rows.map((entry) => entry.paymentStatus)), "전체");
+}
+
+function renderEntryEditRow(entry) {
+  const mainOptions = state.config.processes.map((process) => process.name);
+  const subs = getSubProcesses(entry.mainProcess);
+  return `
+    <td><input class="inline-cell" data-field="date" type="date" value="${escapeAttr(entry.date || "")}"></td>
+    <td><select class="inline-cell" data-field="mainProcess" data-inline-main>${optionsHtml(mainOptions, entry.mainProcess)}</select></td>
+    <td><select class="inline-cell" data-field="subProcess" data-inline-sub>${optionsHtml(subs, entry.subProcess)}</select></td>
+    <td><input class="inline-cell" data-field="detailProcess" type="text" value="${escapeAttr(entry.detailProcess || "")}"></td>
+    <td><select class="inline-cell" data-field="equipment">${optionsHtml(["", ...state.config.equipment], entry.equipment)}</select></td>
+    <td><select class="inline-cell" data-field="labor">${optionsHtml(["", ...state.config.labor], entry.labor)}</select></td>
+    <td><select class="inline-cell" data-field="workAmount">${optionsHtml(["1", "0.5"], String(entry.workAmount || "1"), { "1": "일공수", "0.5": "반공수" })}</select></td>
+    <td><select class="inline-cell" data-field="costType">${optionsHtml(["인건비", "장비대"], entry.costType || "인건비")}</select></td>
+    <td><input class="inline-cell" data-field="cost" type="number" min="0" step="1000" value="${escapeAttr(entry.cost || "")}"></td>
+    <td><select class="inline-cell" data-field="paymentStatus">${optionsHtml(["", ...state.config.payments], entry.paymentStatus)}</select></td>
+    <td><input class="inline-cell" data-field="memo" type="text" value="${escapeAttr(entry.memo || "")}"></td>
+    <td><span class="status-badge pending">수정중</span></td>
+    <td>
+      <div class="row-actions">
+        <button class="icon-btn approve" type="button" data-save-entry>저장</button>
+        <button class="icon-btn" type="button" data-cancel-entry>취소</button>
+      </div>
+    </td>
+  `;
+}
+
 function deleteEntry(id) {
+  const target = state.entries.find((entry) => entry.id === id);
   const confirmed = window.confirm("이 업무현황 항목을 앱에서 삭제할까요?");
   if (!confirmed) return;
   state.entries = state.entries.filter((entry) => entry.id !== id);
   saveState();
   renderAll();
+  if (target && getSyncEndpoint()) {
+    syncPayload("deleteWorkEntries", [target]).then((ok) => {
+      if (ok) syncSharedBackup();
+    });
+  }
+}
+
+function beginEntryEdit(id) {
+  const entry = state.entries.find((item) => item.id === id);
+  if (!entry) return;
+  state.editingEntryId = id;
+  state.editingMaterialId = "";
+  state.draft = [];
+  saveState();
+  renderLogs();
+  renderEditState();
+}
+
+function cancelEntryEdit() {
+  state.editingEntryId = "";
+  saveState();
+  renderLogs();
+  renderEditState();
+}
+
+function refreshInlineSubProcess(row) {
+  if (!row) return;
+  const main = row.querySelector("[data-field='mainProcess']")?.value || "";
+  const sub = row.querySelector("[data-inline-sub]");
+  fillSelect(sub, getSubProcesses(main));
+}
+
+async function saveInlineEntry(row) {
+  if (!row) return;
+  const id = row.dataset.editingEntry;
+  const original = state.entries.find((entry) => entry.id === id);
+  if (!original) return;
+  const value = (field) => row.querySelector(`[data-field='${field}']`)?.value || "";
+  const updated = {
+    ...original,
+    date: value("date") || isoToday,
+    mainProcess: value("mainProcess"),
+    subProcess: value("subProcess"),
+    detailProcess: value("detailProcess").trim(),
+    equipment: value("equipment"),
+    labor: value("labor"),
+    workAmount: numberOrBlank(value("workAmount")),
+    costType: value("costType"),
+    cost: numberOrBlank(value("cost")),
+    paymentStatus: value("paymentStatus"),
+    memo: value("memo").trim(),
+    updatedAt: new Date().toISOString(),
+    status: getSyncEndpoint() ? "sending" : "local"
+  };
+
+  if (!updated.date || !updated.mainProcess || !updated.subProcess) {
+    window.alert("날짜, 주공정, 부공정은 비울 수 없습니다.");
+    return;
+  }
+
+  state.entries = state.entries.map((entry) => entry.id === id ? updated : entry);
+  state.editingEntryId = "";
+  saveState();
+  renderLogs();
+  renderMetrics();
+
+  if (getSyncEndpoint()) {
+    const sent = await syncPayload("workEntries", [updated]);
+    updateEntrySyncStatus([updated], sent ? "sent" : "failed");
+    if (sent) await syncSharedBackup();
+    renderAll();
+  }
 }
 
 async function commitMaterialOrder() {
+  const editId = state.editingMaterialId;
   const order = {
-    id: cryptoId(),
+    id: editId || cryptoId(),
     project: getActiveProjectName(),
     date: elements.materialDate.value || isoToday,
     process: elements.materialProcess.value,
@@ -680,7 +994,8 @@ async function commitMaterialOrder() {
     memo: elements.materialMemo.value.trim(),
     creditAmount: numberOrBlank(elements.materialCreditAmount.value),
     status: getSyncEndpoint() ? "sending" : "local",
-    createdAt: new Date().toISOString()
+    createdAt: state.materialOrders.find((item) => item.id === editId)?.createdAt || new Date().toISOString(),
+    updatedAt: editId ? new Date().toISOString() : ""
   };
 
   if (!order.process || !order.product) {
@@ -688,7 +1003,12 @@ async function commitMaterialOrder() {
     return;
   }
 
-  state.materialOrders.unshift(order);
+  if (editId) {
+    state.materialOrders = state.materialOrders.map((item) => item.id === editId ? order : item);
+    state.editingMaterialId = "";
+  } else {
+    state.materialOrders.unshift(order);
+  }
   saveState();
   clearMaterialForm();
   renderAll();
@@ -714,6 +1034,106 @@ function clearMaterialForm() {
   elements.materialHighPrice.value = "";
   elements.materialCreditAmount.value = "";
   elements.materialMemo.value = "";
+  renderEditState();
+}
+
+function beginMaterialEdit(id) {
+  const order = state.materialOrders.find((item) => item.id === id);
+  if (!order) return;
+  state.editingMaterialId = id;
+  state.editingEntryId = "";
+  saveState();
+  renderMaterialTable();
+  renderEditState();
+}
+
+function cancelMaterialEdit() {
+  state.editingMaterialId = "";
+  saveState();
+  renderMaterialTable();
+  renderEditState();
+}
+
+async function saveInlineMaterial(row) {
+  if (!row) return;
+  const id = row.dataset.editingMaterial;
+  const original = state.materialOrders.find((order) => order.id === id);
+  if (!original) return;
+  const value = (field) => row.querySelector(`[data-field='${field}']`)?.value || "";
+  const updated = {
+    ...original,
+    date: value("date") || isoToday,
+    process: value("process"),
+    product: value("product").trim(),
+    vendor: value("vendor").trim(),
+    area: value("area").trim(),
+    orderAmount: numberOrBlank(value("orderAmount")),
+    lowPrice: numberOrBlank(value("lowPrice")),
+    highPrice: numberOrBlank(value("highPrice")),
+    memo: value("memo").trim(),
+    creditAmount: numberOrBlank(value("creditAmount")),
+    updatedAt: new Date().toISOString(),
+    status: getSyncEndpoint() ? "sending" : "local"
+  };
+
+  if (!updated.process || !updated.product) {
+    window.alert("공정과 제품명은 비울 수 없습니다.");
+    return;
+  }
+
+  state.materialOrders = state.materialOrders.map((order) => order.id === id ? updated : order);
+  state.editingMaterialId = "";
+  saveState();
+  renderMaterialTable();
+  renderMaterialCards();
+  renderMetrics();
+
+  if (getSyncEndpoint()) {
+    const sent = await syncPayload("materialOrders", [updated]);
+    state.materialOrders = state.materialOrders.map((order) => order.id === updated.id ? { ...order, status: sent ? "sent" : "failed" } : order);
+    if (sent) state.lastSync = new Date().toISOString();
+    saveState();
+    if (sent) await syncSharedBackup();
+    renderAll();
+  }
+}
+
+function deleteMaterialOrder(id) {
+  const target = state.materialOrders.find((order) => order.id === id);
+  const confirmed = window.confirm("이 자재현황 항목을 앱에서 삭제할까요?");
+  if (!confirmed) return;
+  state.materialOrders = state.materialOrders.filter((order) => order.id !== id);
+  saveState();
+  renderAll();
+  if (target && getSyncEndpoint()) {
+    syncPayload("deleteMaterialOrders", [target]).then((ok) => {
+      if (ok) syncSharedBackup();
+    });
+  }
+}
+
+function renderEditState() {
+  const editingEntry = Boolean(state.editingEntryId);
+  const editingMaterial = Boolean(state.editingMaterialId);
+  elements.cancelEntryEditButton.classList.toggle("hidden", !editingEntry);
+  elements.addDraftButton.classList.toggle("hidden", editingEntry);
+  elements.entrySubmitButton.textContent = editingEntry ? "수정 저장" : "업무현황 저장";
+  elements.logEditBar.classList.toggle("hidden", !editingEntry);
+  elements.cancelMaterialEditButton.classList.toggle("hidden", !editingMaterial);
+  elements.materialSubmitButton.textContent = editingMaterial ? "수정 저장" : "자재현황 저장";
+  elements.materialEditBar.classList.toggle("hidden", !editingMaterial);
+}
+
+function ensureSelectValue(select, value) {
+  if (!select || value === undefined || value === null) return;
+  const text = String(value);
+  if (text && !Array.from(select.options).some((option) => option.value === text)) {
+    const option = document.createElement("option");
+    option.value = text;
+    option.textContent = text;
+    select.prepend(option);
+  }
+  select.value = text;
 }
 
 function renderMaterialCards() {
@@ -746,24 +1166,47 @@ function renderMaterialCards() {
 }
 
 function renderMaterialTable() {
+  const startFilter = elements.materialStartDateFilter.value;
+  const endFilter = elements.materialEndDateFilter.value;
   const processFilter = elements.materialProcessFilter.value;
+  const quickDate = elements.materialDateQuickFilter.value;
+  const quickProcess = elements.materialProcessQuickFilter.value;
+  const productText = elements.materialProductFilter.value.trim().toLowerCase();
+  const vendorText = elements.materialVendorFilter.value.trim().toLowerCase();
+  const areaText = elements.materialAreaFilter.value.trim().toLowerCase();
+  const memoText = elements.materialMemoFilter.value.trim().toLowerCase();
   const search = elements.materialSearch.value.trim().toLowerCase();
-  const rows = projectMaterialOrders().filter((order) => {
+  const sourceRows = projectMaterialOrders();
+  renderMaterialColumnFilters(sourceRows);
+  const rows = sourceRows.filter((order) => {
+    const dateMatch = (!startFilter || order.date >= startFilter) && (!endFilter || order.date <= endFilter);
+    const quickDateMatch = !quickDate || order.date === quickDate;
     const processMatch = !processFilter || processFilter === "전체 공정" || order.process === processFilter;
+    const quickProcessMatch = !quickProcess || order.process === quickProcess;
     const searchText = `${order.product} ${order.vendor} ${order.memo}`.toLowerCase();
-    return processMatch && (!search || searchText.includes(search));
-  });
+    const productMatch = !productText || String(order.product || "").toLowerCase().includes(productText);
+    const vendorMatch = !vendorText || String(order.vendor || "").toLowerCase().includes(vendorText);
+    const areaMatch = !areaText || String(order.area || "").toLowerCase().includes(areaText);
+    const memoMatch = !memoText || String(order.memo || "").toLowerCase().includes(memoText);
+    return dateMatch && quickDateMatch && processMatch && quickProcessMatch && productMatch && vendorMatch && areaMatch && memoMatch && (!search || searchText.includes(search));
+  }).sort(compareDateAsc);
 
   elements.materialTableBody.innerHTML = "";
   if (rows.length === 0) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td colspan="11">${emptyState().outerHTML}</td>`;
+    row.innerHTML = `<td colspan="12">${emptyState().outerHTML}</td>`;
     elements.materialTableBody.append(row);
     return;
   }
 
   rows.forEach((order) => {
     const tr = document.createElement("tr");
+    if (state.editingMaterialId === order.id) {
+      tr.dataset.editingMaterial = order.id;
+      tr.innerHTML = renderMaterialEditRow(order);
+      elements.materialTableBody.append(tr);
+      return;
+    }
     tr.innerHTML = `
       <td>${formatDate(order.date)}</td>
       <td>${escapeHtml(order.process)}</td>
@@ -776,9 +1219,56 @@ function renderMaterialTable() {
       <td>${escapeHtml(order.memo)}</td>
       <td>${formatMoney(order.creditAmount)}</td>
       <td><span class="status-badge ${order.status === "failed" ? "pending" : "done"}">${syncLabels[order.status] || order.status || "원본"}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" type="button" title="수정" data-edit-material="${order.id}">수정</button>
+          <button class="icon-btn delete" type="button" title="삭제" data-delete-material="${order.id}">X</button>
+        </div>
+      </td>
     `;
     elements.materialTableBody.append(tr);
   });
+
+  elements.materialTableBody.querySelectorAll("[data-edit-material]").forEach((button) => {
+    button.addEventListener("click", () => beginMaterialEdit(button.dataset.editMaterial));
+  });
+  elements.materialTableBody.querySelectorAll("[data-save-material]").forEach((button) => {
+    button.addEventListener("click", () => saveInlineMaterial(button.closest("tr")));
+  });
+  elements.materialTableBody.querySelectorAll("[data-cancel-material]").forEach((button) => {
+    button.addEventListener("click", cancelMaterialEdit);
+  });
+  elements.materialTableBody.querySelectorAll("[data-delete-material]").forEach((button) => {
+    button.addEventListener("click", () => deleteMaterialOrder(button.dataset.deleteMaterial));
+  });
+}
+
+function renderMaterialColumnFilters(rows) {
+  fillFilterSelect(elements.materialDateQuickFilter, uniqueValues(rows.map((order) => order.date)), "전체 날짜");
+  fillFilterSelect(elements.materialProcessQuickFilter, uniqueValues(rows.map((order) => order.process)), "전체");
+}
+
+function renderMaterialEditRow(order) {
+  const mainOptions = state.config.processes.map((process) => process.name);
+  return `
+    <td><input class="inline-cell" data-field="date" type="date" value="${escapeAttr(order.date || "")}"></td>
+    <td><select class="inline-cell" data-field="process">${optionsHtml(mainOptions, order.process)}</select></td>
+    <td><input class="inline-cell" data-field="product" type="text" value="${escapeAttr(order.product || "")}"></td>
+    <td><input class="inline-cell" data-field="vendor" type="text" value="${escapeAttr(order.vendor || "")}"></td>
+    <td><input class="inline-cell" data-field="area" type="text" value="${escapeAttr(order.area || "")}"></td>
+    <td><input class="inline-cell" data-field="orderAmount" type="number" min="0" step="1000" value="${escapeAttr(order.orderAmount || "")}"></td>
+    <td><input class="inline-cell" data-field="lowPrice" type="number" min="0" step="1000" value="${escapeAttr(order.lowPrice || "")}"></td>
+    <td><input class="inline-cell" data-field="highPrice" type="number" min="0" step="1000" value="${escapeAttr(order.highPrice || "")}"></td>
+    <td><input class="inline-cell" data-field="memo" type="text" value="${escapeAttr(order.memo || "")}"></td>
+    <td><input class="inline-cell" data-field="creditAmount" type="number" min="0" step="1000" value="${escapeAttr(order.creditAmount || "")}"></td>
+    <td><span class="status-badge pending">수정중</span></td>
+    <td>
+      <div class="row-actions">
+        <button class="icon-btn approve" type="button" data-save-material>저장</button>
+        <button class="icon-btn" type="button" data-cancel-material>취소</button>
+      </div>
+    </td>
+  `;
 }
 
 function renderSummary() {
@@ -789,7 +1279,7 @@ function renderSummary() {
   const workDays = countUnique(workRows.map((row) => row.date));
   const elapsedDays = startDate ? daysBetween(startDate, isoToday) + 1 : 0;
 
-  const stats = [
+  const moneyStats = [
     { label: "총공사비", value: formatMoney(totals.totalCost), tone: "total" },
     { label: "현지출액", value: formatMoney(Math.max(0, totals.totalCost - totals.credit)), tone: "spent" },
     { label: "외상", value: formatMoney(totals.credit), tone: "credit" },
@@ -798,19 +1288,37 @@ function renderSummary() {
       value: formatMoney(item.amount),
       tone: item.type === "credit" ? "credit" : "spent"
     })),
+    { label: "자재비교이익", value: formatMoney(totals.comparisonProfit), tone: "profit" }
+  ];
+  const metaStats = [
     { label: "공사 시작일", value: formatDate(startDate) },
     { label: "작업일", value: `${workDays}일` },
     { label: "경과일", value: `${elapsedDays}일` },
-    { label: "자재비교이익", value: formatMoney(totals.comparisonProfit), tone: "profit" }
+    { label: "업무 기록", value: `${workRows.length}건` },
+    { label: "자재 기록", value: `${materialRows.length}건` }
   ];
 
   elements.summaryCards.innerHTML = "";
-  stats.forEach((card) => {
+  const moneyWrap = document.createElement("div");
+  moneyWrap.className = "summary-money-strip";
+  moneyStats.forEach((card) => {
     const el = document.createElement("article");
     el.className = `absolute-stat ${card.tone ? `stat-${card.tone}` : ""}`;
     el.innerHTML = `<span>${escapeHtml(card.label)}</span><strong>${escapeHtml(card.value)}</strong>`;
-    elements.summaryCards.append(el);
+    moneyWrap.append(el);
   });
+  const metaWrap = document.createElement("aside");
+  metaWrap.className = "summary-meta-strip";
+  metaWrap.innerHTML = `
+    <strong>운영 기준</strong>
+    ${metaStats.map((item) => `
+      <div class="summary-meta-item">
+        <span>${escapeHtml(item.label)}</span>
+        <em>${escapeHtml(item.value)}</em>
+      </div>
+    `).join("")}
+  `;
+  elements.summaryCards.append(moneyWrap, metaWrap);
 
   elements.summaryTabs.querySelectorAll("[data-summary-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.summaryTab === state.summaryTab);
@@ -975,8 +1483,9 @@ function buildCategoryBreakdownRows(category, workRows, materialRows) {
 }
 
 function renderPieChart(container, rows) {
-  const colors = ["#176f63", "#2f6ca5", "#b36b00", "#ad3e32", "#5d6470"];
-  const total = sum(rows.map((row) => Number(row.value || 0)));
+  const colors = ["#7a4d24", "#b88746", "#6d7650", "#ad3e32", "#5d6470", "#a98b65"];
+  const meaningful = rows.filter((row) => Number(row.value || 0) > 0);
+  const total = sum(meaningful.map((row) => Number(row.value || 0)));
 
   if (!total) {
     container.append(emptyState());
@@ -984,7 +1493,7 @@ function renderPieChart(container, rows) {
   }
 
   let cursor = 0;
-  const stops = rows.map((row, index) => {
+  const stops = meaningful.map((row, index) => {
     const start = cursor;
     cursor += (Number(row.value || 0) / total) * 100;
     return `${colors[index % colors.length]} ${start}% ${cursor}%`;
@@ -993,15 +1502,24 @@ function renderPieChart(container, rows) {
   const wrap = document.createElement("div");
   wrap.className = "pie-chart-wrap";
   wrap.innerHTML = `
-    <div class="pie-chart" style="background: conic-gradient(${stops})"></div>
+    <div class="pie-visual">
+      <div class="pie-chart" style="background: conic-gradient(${stops})"></div>
+      <div class="pie-center">
+        <span>합계</span>
+        <strong>${formatMoney(total)}</strong>
+      </div>
+    </div>
     <div class="chart-legend">
-      ${rows.map((row, index) => `
+      ${meaningful.map((row, index) => {
+        const percent = Math.round((Number(row.value || 0) / total) * 100);
+        return `
         <div class="legend-row">
           <span style="background:${colors[index % colors.length]}"></span>
           <strong>${escapeHtml(row.name)}</strong>
-          <em>${formatMoney(row.value)} · ${Math.round((Number(row.value || 0) / total) * 100)}%</em>
+          <em>${formatMoney(row.value)} · ${percent}%</em>
+          <div class="legend-meter"><i style="width:${percent}%"></i></div>
         </div>
-      `).join("")}
+      `;}).join("")}
     </div>
   `;
   container.append(wrap);
@@ -1010,6 +1528,7 @@ function renderPieChart(container, rows) {
 function renderBarChart(container, rows) {
   const meaningful = rows.filter((row) => Number(row.value || 0) > 0);
   const max = Math.max(...meaningful.map((row) => Number(row.value || 0)), 1);
+  const total = sum(meaningful.map((row) => Number(row.value || 0)));
 
   if (meaningful.length === 0) {
     container.append(emptyState());
@@ -1019,6 +1538,7 @@ function renderBarChart(container, rows) {
   const list = document.createElement("div");
   list.className = "chart-list";
   meaningful.forEach((row) => {
+    const percentOfTotal = total ? Math.round((Number(row.value || 0) / total) * 100) : 0;
     const item = document.createElement("div");
     item.className = "bar-row chart-bar-row";
     item.innerHTML = `
@@ -1027,7 +1547,7 @@ function renderBarChart(container, rows) {
         <div class="bar-track"><div class="bar-fill" style="width: ${(Number(row.value || 0) / max) * 100}%"></div></div>
         ${row.meta ? `<small>${escapeHtml(row.meta)}</small>` : ""}
       </div>
-      <strong>${formatMoney(row.value)}</strong>
+      <strong>${formatMoney(row.value)} <span>${percentOfTotal}%</span></strong>
     `;
     list.append(item);
   });
@@ -1068,12 +1588,16 @@ function renderRankList(container, rows, suffix) {
     container.append(emptyState());
     return;
   }
+  const max = Math.max(...rows.map((row) => Number(row.value || 0)), 1);
   rows.forEach((row, index) => {
     const item = document.createElement("div");
     item.className = "rank-item";
     item.innerHTML = `
       <span>${index + 1}</span>
-      <strong>${escapeHtml(row.name)}</strong>
+      <div>
+        <strong>${escapeHtml(row.name)}</strong>
+        <div class="rank-meter"><i style="width:${(Number(row.value || 0) / max) * 100}%"></i></div>
+      </div>
       <em>${formatMoney(row.value)} ${suffix}</em>
     `;
     container.append(item);
@@ -1081,10 +1605,66 @@ function renderRankList(container, rows, suffix) {
 }
 
 function renderSettings() {
+  renderProjectSettings();
   renderProcessSettings();
   renderEditableTags(elements.equipmentSettings, "equipment", state.config.equipment);
   renderEditableTags(elements.laborSettings, "labor", state.config.labor);
   renderEditableTags(elements.paymentSettings, "payment", state.config.payments);
+}
+
+function renderProjectSettings() {
+  elements.projectSettings.innerHTML = "";
+  state.projects.forEach((project) => {
+    const card = document.createElement("article");
+    card.className = "process-card settings-process-card";
+    card.innerHTML = `
+      <header>
+        <strong>${escapeHtml(project.name)}</strong>
+        <button class="icon-btn delete" type="button" title="프로젝트 삭제" data-remove-project="${escapeAttr(project.name)}" ${state.projects.length <= 1 ? "disabled" : ""}>X</button>
+      </header>
+      <p>${project.syncEndpoint ? "구글시트 연결됨" : "URL 미등록"}</p>
+    `;
+    elements.projectSettings.append(card);
+  });
+
+  elements.projectSettings.querySelectorAll("[data-remove-project]").forEach((button) => {
+    button.addEventListener("click", () => removeProject(button.dataset.removeProject));
+  });
+}
+
+function addProject() {
+  const name = elements.newProjectName.value.trim();
+  const endpoint = elements.newProjectEndpoint.value.trim();
+  if (!name) {
+    window.alert("프로젝트명을 입력해주세요.");
+    return;
+  }
+  const existing = state.projects.find((project) => project.name === name);
+  if (existing) {
+    existing.syncEndpoint = endpoint || existing.syncEndpoint;
+  } else {
+    state.projects.push({ name, syncEndpoint: endpoint, spreadsheetId: "" });
+  }
+  state.activeProject = name;
+  elements.newProjectName.value = "";
+  elements.newProjectEndpoint.value = "";
+  saveState();
+  renderAll();
+  syncSharedBackup();
+}
+
+function removeProject(name) {
+  if (state.projects.length <= 1) return;
+  const confirmed = window.confirm(`${name} 프로젝트를 목록에서 삭제할까요? 구글시트 데이터는 삭제되지 않습니다.`);
+  if (!confirmed) return;
+  state.projects = state.projects.filter((project) => project.name !== name);
+  state.entries = state.entries.filter((entry) => (entry.project || "제천2덕동골") !== name);
+  state.materialOrders = state.materialOrders.filter((order) => (order.project || "제천2덕동골") !== name);
+  state.extraSummaryItems = state.extraSummaryItems.filter((item) => (item.project || "제천2덕동골") !== name);
+  if (state.activeProject === name) state.activeProject = state.projects[0]?.name || "제천2덕동골";
+  saveState();
+  renderAll();
+  syncSharedBackup();
 }
 
 function addSummaryExtraItem() {
@@ -1311,6 +1891,7 @@ function buildSharedStatePayload() {
   return {
     project: getActiveProjectName(),
     savedAt: new Date().toISOString(),
+    projects: state.projects,
     config: state.config,
     extraSummaryItems: projectExtraSummaryItems(),
     summaryRange: {
@@ -1376,6 +1957,10 @@ async function restoreFromGoogleSheet() {
 
     if (stateData.config) {
       state.config = normalizeConfig(stateData.config);
+    }
+
+    if (Array.isArray(stateData.projects) && stateData.projects.length) {
+      state.projects = mergeProjects(stateData.projects, state.projects);
     }
 
     if (Array.isArray(stateData.extraSummaryItems)) {
@@ -1567,6 +2152,17 @@ function groupSum(rows, nameGetter, valueGetter) {
   return Array.from(map, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 }
 
+function uniqueValues(values) {
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+}
+
+function compareDateAsc(a, b) {
+  const dateA = a.date || "9999-12-31";
+  const dateB = b.date || "9999-12-31";
+  if (dateA !== dateB) return dateA.localeCompare(dateB);
+  return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+}
+
 function countUnique(values) {
   return new Set(values.filter(Boolean)).size;
 }
@@ -1688,7 +2284,9 @@ function loadState() {
       entries: parsed.entries?.length ? parsed.entries.map((entry) => ({ ...entry, project: entry.project || "제천2덕동골" })) : clone(seedState.entries),
       materialOrders: parsed.materialOrders?.length ? parsed.materialOrders.map((order) => ({ ...order, project: order.project || "제천2덕동골" })) : clone(seedState.materialOrders),
       projects: mergeProjects(parsed.projects || [], clone(seedState.projects)),
-      extraSummaryItems: (parsed.extraSummaryItems || []).map((item) => ({ ...item, project: item.project || "제천2덕동골", type: item.type || "spent" }))
+      extraSummaryItems: (parsed.extraSummaryItems || []).map((item) => ({ ...item, project: item.project || "제천2덕동골", type: item.type || "spent" })),
+      editingEntryId: "",
+      editingMaterialId: ""
     };
     if (loaded.syncEndpoint && loaded.projects[0] && !loaded.projects[0].syncEndpoint) {
       loaded.projects[0].syncEndpoint = loaded.syncEndpoint;
