@@ -21,9 +21,9 @@ const kindLabels = {
 };
 
 const syncLabels = {
-  synced: "원본",
-  sent: "전송시도",
-  local: "로컬",
+  synced: "시트",
+  sent: "시트저장",
+  local: "저장대기",
   sending: "전송중",
   failed: "전송실패"
 };
@@ -170,6 +170,7 @@ function cacheElements() {
     syncEndpoint: document.querySelector("#syncEndpoint"),
     saveSyncButton: document.querySelector("#saveSyncButton"),
     restoreSyncButton: document.querySelector("#restoreSyncButton"),
+    pushSyncButton: document.querySelector("#pushSyncButton"),
     syncState: document.querySelector("#syncState"),
     quickAddForm: document.querySelector("#quickAddForm"),
     quickAddType: document.querySelector("#quickAddType"),
@@ -234,7 +235,7 @@ function bindEvents() {
     await commitWorkEntries();
   });
 
-  elements.entrySyncButton.addEventListener("click", syncAllPending);
+  if (elements.entrySyncButton) elements.entrySyncButton.addEventListener("click", pushCurrentProjectToGoogleSheet);
   elements.cancelEntryEditButton.addEventListener("click", cancelEntryEdit);
   elements.logInlineSaveButton.addEventListener("click", () => saveInlineEntry(elements.logTableBody.querySelector("[data-editing-entry]")));
   elements.logInlineCancelButton.addEventListener("click", cancelEntryEdit);
@@ -326,9 +327,11 @@ function bindEvents() {
     if (getActiveProjectName() === "제천2덕동골") state.syncEndpoint = endpoint;
     saveState();
     renderSyncState();
+    queueSharedBackup();
   });
 
   elements.restoreSyncButton.addEventListener("click", restoreFromGoogleSheet);
+  if (elements.pushSyncButton) elements.pushSyncButton.addEventListener("click", pushCurrentProjectToGoogleSheet);
 
   elements.projectAddForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -350,7 +353,7 @@ function bindEvents() {
     quickAddSetting();
   });
 
-  elements.resetDataButton.addEventListener("click", () => {
+  if (elements.resetDataButton) elements.resetDataButton.addEventListener("click", () => {
     const confirmed = window.confirm("원본 시트에서 가져온 초기 상태로 되돌릴까요?");
     if (!confirmed) return;
     state = clone(seedState);
@@ -359,7 +362,7 @@ function bindEvents() {
     renderAll();
   });
 
-  elements.exportButton.addEventListener("click", syncAllPending);
+  if (elements.exportButton) elements.exportButton.addEventListener("click", pushCurrentProjectToGoogleSheet);
 }
 
 function initializeDefaults() {
@@ -910,7 +913,7 @@ function renderEntryEditRow(entry) {
   `;
 }
 
-function deleteEntry(id) {
+async function deleteEntry(id) {
   const target = state.entries.find((entry) => entry.id === id);
   const confirmed = window.confirm("이 업무현황 항목을 앱에서 삭제할까요?");
   if (!confirmed) return;
@@ -918,9 +921,15 @@ function deleteEntry(id) {
   saveState();
   renderAll();
   if (target && getSyncEndpoint()) {
-    syncPayload("deleteWorkEntries", [target]).then((ok) => {
-      if (ok) syncSharedBackup();
-    });
+    const deleted = await syncPayload("deleteWorkEntries", [target]);
+    if (deleted) {
+      await syncSharedBackup();
+      state.lastSync = new Date().toISOString();
+      saveState();
+      renderSyncState();
+    } else {
+      window.alert("앱에서는 삭제했지만 구글시트 삭제 요청에 실패했습니다. 환경설정의 구글시트로 보내기를 실행해주세요.");
+    }
   }
 }
 
@@ -1121,7 +1130,7 @@ async function saveInlineMaterial(row) {
   }
 }
 
-function deleteMaterialOrder(id) {
+async function deleteMaterialOrder(id) {
   const target = state.materialOrders.find((order) => order.id === id);
   const confirmed = window.confirm("이 자재현황 항목을 앱에서 삭제할까요?");
   if (!confirmed) return;
@@ -1129,9 +1138,15 @@ function deleteMaterialOrder(id) {
   saveState();
   renderAll();
   if (target && getSyncEndpoint()) {
-    syncPayload("deleteMaterialOrders", [target]).then((ok) => {
-      if (ok) syncSharedBackup();
-    });
+    const deleted = await syncPayload("deleteMaterialOrders", [target]);
+    if (deleted) {
+      await syncSharedBackup();
+      state.lastSync = new Date().toISOString();
+      saveState();
+      renderSyncState();
+    } else {
+      window.alert("앱에서는 삭제했지만 구글시트 삭제 요청에 실패했습니다. 환경설정의 구글시트로 보내기를 실행해주세요.");
+    }
   }
 }
 
@@ -1396,7 +1411,7 @@ function renderSummaryChart(workRows, materialRows, totals) {
       saveState();
       renderSummary();
     });
-    renderBarChart(elements.summaryChart, buildCategoryBreakdownRows(selectedCategory.key, workRows, materialRows));
+    renderPieChart(elements.summaryChart, buildCategoryBreakdownRows(selectedCategory.key, workRows, materialRows));
     return;
   }
 
@@ -1436,14 +1451,14 @@ function renderSummaryChart(workRows, materialRows, totals) {
     },
     vendor: {
       title: "업체별 발주",
-      mode: "상위 업체",
-      type: "rank",
+      mode: "비중 그래프",
+      type: "pie",
       rows: groupSum(materialRows, (row) => row.vendor || "업체 미입력", (row) => Number(row.orderAmount || 0)).slice(0, 10)
     },
     payment: {
       title: "결제·외상",
-      mode: "관리 항목",
-      type: "rank",
+      mode: "비중 그래프",
+      type: "pie",
       rows: buildPaymentRows(workRows, materialRows).slice(0, 10)
     }
   };
@@ -1506,7 +1521,7 @@ function buildCategoryBreakdownRows(category, workRows, materialRows) {
 }
 
 function renderPieChart(container, rows) {
-  const colors = ["#7a4d24", "#b88746", "#6d7650", "#ad3e32", "#5d6470", "#a98b65"];
+  const colors = chartColors();
   const meaningful = rows.filter((row) => Number(row.value || 0) > 0);
   const total = sum(meaningful.map((row) => Number(row.value || 0)));
 
@@ -1515,18 +1530,31 @@ function renderPieChart(container, rows) {
     return;
   }
 
-  let cursor = 0;
-  const stops = meaningful.map((row, index) => {
-    const start = cursor;
-    cursor += (Number(row.value || 0) / total) * 100;
-    return `${colors[index % colors.length]} ${start}% ${cursor}%`;
-  }).join(", ");
+  const segments = buildPieSegments(meaningful, total, colors);
 
   const wrap = document.createElement("div");
   wrap.className = "pie-chart-wrap";
   wrap.innerHTML = `
     <div class="pie-visual">
-      <div class="pie-chart" style="background: conic-gradient(${stops})"></div>
+      <svg class="pie-chart-svg" viewBox="0 0 320 320" role="img" aria-label="비용 비중 원형 그래프">
+        <defs>
+          <filter id="pieDepth" x="-15%" y="-15%" width="130%" height="130%">
+            <feDropShadow dx="0" dy="10" stdDeviation="8" flood-color="#4d2e16" flood-opacity="0.18"/>
+          </filter>
+        </defs>
+        <g filter="url(#pieDepth)">
+          ${segments.map((segment) => `
+            <path class="pie-segment" d="${segment.path}" fill="${segment.color}"></path>
+          `).join("")}
+        </g>
+        ${segments.map((segment) => segment.callout).join("")}
+        ${segments.map((segment) => `
+          <text class="pie-slice-label ${segment.outside ? "outside" : "inside"}" x="${segment.labelX}" y="${segment.labelY}" text-anchor="${segment.anchor}">
+            <tspan x="${segment.labelX}">${escapeHtml(segment.shortName)}</tspan>
+            <tspan x="${segment.labelX}" dy="14">${segment.percent}%</tspan>
+          </text>
+        `).join("")}
+      </svg>
       <div class="pie-center">
         <span>합계</span>
         <strong>${formatMoney(total)}</strong>
@@ -1546,6 +1574,67 @@ function renderPieChart(container, rows) {
     </div>
   `;
   container.append(wrap);
+}
+
+function buildPieSegments(rows, total, colors) {
+  const cx = 160;
+  const cy = 160;
+  const outer = 128;
+  const inner = 68;
+  let angle = -90;
+  return rows.map((row, index) => {
+    const value = Number(row.value || 0);
+    const sweep = Math.max(0.8, (value / total) * 360);
+    const end = angle + sweep;
+    const large = sweep > 180 ? 1 : 0;
+    const outerStart = polarPoint(cx, cy, outer, angle);
+    const outerEnd = polarPoint(cx, cy, outer, end);
+    const innerEnd = polarPoint(cx, cy, inner, end);
+    const innerStart = polarPoint(cx, cy, inner, angle);
+    const mid = angle + sweep / 2;
+    const percent = Math.round((value / total) * 100);
+    const outside = percent < 8;
+    const labelPoint = polarPoint(cx, cy, outside ? 146 : 101, mid);
+    const calloutStart = polarPoint(cx, cy, 122, mid);
+    const calloutEnd = polarPoint(cx, cy, 139, mid);
+    const path = [
+      `M ${outerStart.x} ${outerStart.y}`,
+      `A ${outer} ${outer} 0 ${large} 1 ${outerEnd.x} ${outerEnd.y}`,
+      `L ${innerEnd.x} ${innerEnd.y}`,
+      `A ${inner} ${inner} 0 ${large} 0 ${innerStart.x} ${innerStart.y}`,
+      "Z"
+    ].join(" ");
+    const segment = {
+      path,
+      color: colors[index % colors.length],
+      shortName: shortenLabel(row.name, outside ? 7 : 5),
+      percent,
+      outside,
+      labelX: labelPoint.x,
+      labelY: labelPoint.y,
+      anchor: outside ? (labelPoint.x >= cx ? "start" : "end") : "middle",
+      callout: outside ? `<line class="pie-callout" x1="${calloutStart.x}" y1="${calloutStart.y}" x2="${calloutEnd.x}" y2="${calloutEnd.y}"></line>` : ""
+    };
+    angle = end;
+    return segment;
+  });
+}
+
+function polarPoint(cx, cy, radius, angle) {
+  const rad = (Math.PI / 180) * angle;
+  return {
+    x: Number((cx + radius * Math.cos(rad)).toFixed(2)),
+    y: Number((cy + radius * Math.sin(rad)).toFixed(2))
+  };
+}
+
+function shortenLabel(value, maxLength) {
+  const text = String(value || "");
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function chartColors() {
+  return ["#8b4513", "#0f766e", "#d97706", "#2563eb", "#be123c", "#4d7c0f", "#7c3aed", "#9333ea", "#0891b2", "#c2410c"];
 }
 
 function renderBarChart(container, rows) {
@@ -1673,7 +1762,7 @@ function addProject() {
   elements.newProjectEndpoint.value = "";
   saveState();
   renderAll();
-  syncSharedBackup();
+  queueSharedBackup();
 }
 
 function removeProject(name) {
@@ -1687,7 +1776,7 @@ function removeProject(name) {
   if (state.activeProject === name) state.activeProject = state.projects[0]?.name || "제천2덕동골";
   saveState();
   renderAll();
-  syncSharedBackup();
+  queueSharedBackup();
 }
 
 function addSummaryExtraItem() {
@@ -1704,6 +1793,7 @@ function addSummaryExtraItem() {
   saveState();
   renderSummary();
   renderMetrics();
+  queueSharedBackup();
 }
 
 function renderSummaryExtraList() {
@@ -1718,6 +1808,7 @@ function renderSummaryExtraList() {
       saveState();
       renderSummary();
       renderMetrics();
+      queueSharedBackup();
     });
     elements.summaryExtraList.append(button);
   });
@@ -1774,6 +1865,7 @@ function addProcess() {
   elements.newProcessName.value = "";
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function addSubProcess() {
@@ -1788,6 +1880,7 @@ function addSubProcess() {
   elements.newSubProcessName.value = "";
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function removeProcess(name) {
@@ -1796,6 +1889,7 @@ function removeProcess(name) {
   state.config.processes = state.config.processes.filter((process) => process.name !== name);
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function removeSubProcess(processName, subName) {
@@ -1805,6 +1899,7 @@ function removeSubProcess(processName, subName) {
   });
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function quickAddSetting() {
@@ -1820,6 +1915,7 @@ function quickAddSetting() {
   elements.quickAddName.value = "";
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function removeSettingItem(type, value) {
@@ -1827,6 +1923,7 @@ function removeSettingItem(type, value) {
   state.config[key] = state.config[key].filter((item) => item !== value);
   saveState();
   renderAll();
+  queueSharedBackup();
 }
 
 function renderSyncState() {
@@ -1871,53 +1968,68 @@ async function syncSharedBackup() {
   return appStateOk && summaryOk && cleanupOk;
 }
 
-async function syncAllPending() {
+function queueSharedBackup() {
+  if (!getSyncEndpoint()) return;
+  syncSharedBackup().then((ok) => {
+    if (!ok) return;
+    state.lastSync = new Date().toISOString();
+    saveState();
+    renderSyncState();
+  });
+}
+
+async function pushCurrentProjectToGoogleSheet() {
   if (syncingAll) return;
   if (!getSyncEndpoint()) {
     window.alert("환경설정에서 현재 프로젝트의 Apps Script 웹앱 URL을 먼저 저장해주세요.");
     setView("settings");
     return;
   }
+
+  const confirmed = window.confirm("현재 앱에 저장된 선택 프로젝트 데이터를 기준으로 구글시트를 정리해서 보낼까요? 다른 사람이 같은 시트에 방금 입력한 내용은 먼저 구글시트 불러오기를 한 뒤 보내는 것이 안전합니다.");
+  if (!confirmed) return;
+
   syncingAll = true;
 
   const projectName = getActiveProjectName();
   dedupeProjectState(projectName);
-  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
-  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
+  setManualSyncBusy(true);
 
-  elements.exportButton.disabled = true;
-  elements.exportButton.textContent = "저장 중";
-  if (elements.entrySyncButton) {
-    elements.entrySyncButton.disabled = true;
-    elements.entrySyncButton.textContent = "저장 중";
-  }
+  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName);
+  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName);
+  const pushed = await syncPayload("replaceProjectData", [], {
+    workEntries: workRows,
+    materialOrders: materialRows,
+    summaryRows: buildSummarySnapshotRows(),
+    stateData: buildSharedStatePayload()
+  });
 
-  const workOk = workRows.length ? await syncPayload("workEntries", workRows) : true;
-  const materialOk = materialRows.length ? await syncPayload("materialOrders", materialRows) : true;
-  const backupOk = await syncSharedBackup();
-
-  const workIds = new Set(workRows.map((entry) => entry.id));
-  const materialIds = new Set(materialRows.map((entry) => entry.id));
-
-  state.entries = state.entries.map((entry) => workIds.has(entry.id) ? { ...entry, status: workOk ? "sent" : "failed" } : entry);
-  state.materialOrders = state.materialOrders.map((entry) => materialIds.has(entry.id) ? { ...entry, status: materialOk ? "sent" : "failed" } : entry);
-  if (workOk && materialOk) state.lastSync = new Date().toISOString();
+  state.entries = state.entries.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
+  state.materialOrders = state.materialOrders.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
+  if (pushed) state.lastSync = new Date().toISOString();
   saveState();
   renderAll();
 
-  elements.exportButton.disabled = false;
-  elements.exportButton.textContent = "구글시트에 저장";
-  if (elements.entrySyncButton) {
-    elements.entrySyncButton.disabled = false;
-    elements.entrySyncButton.textContent = "구글시트에 저장";
-  }
+  setManualSyncBusy(false);
   syncingAll = false;
-  const sentCount = workRows.length + materialRows.length;
-  window.alert(workOk && materialOk && backupOk
-    ? sentCount
-      ? `새 항목 ${sentCount}건과 앱 백업을 구글시트에 저장했습니다.`
-      : "새 업무/자재 항목은 없어 앱 백업만 저장했습니다."
-    : "일부 저장 요청에 실패했습니다. Apps Script URL과 권한을 확인해주세요.");
+  window.alert(pushed
+    ? `현재 앱 데이터 ${workRows.length + materialRows.length}건을 구글시트로 보냈습니다.`
+    : "구글시트로 보내기에 실패했습니다. Apps Script URL과 권한을 확인해주세요.");
+}
+
+async function syncAllPending() {
+  return pushCurrentProjectToGoogleSheet();
+}
+
+function setManualSyncBusy(isBusy) {
+  [
+    elements.pushSyncButton,
+    elements.exportButton,
+    elements.entrySyncButton
+  ].filter(Boolean).forEach((button) => {
+    button.disabled = isBusy;
+    button.textContent = isBusy ? "보내는 중" : (button.id === "pushSyncButton" ? "구글시트로 보내기" : "구글시트에 저장");
+  });
 }
 
 function buildSharedStatePayload() {
@@ -1968,7 +2080,7 @@ async function restoreFromGoogleSheet() {
     return;
   }
 
-  const confirmed = window.confirm("현재 프로젝트의 로컬 데이터를 구글시트 백업으로 바꿀까요?");
+  const confirmed = window.confirm("구글시트에 저장된 자료를 현재 앱으로 불러올까요? 현재 앱의 선택 프로젝트 자료가 구글시트 기준으로 바뀝니다.");
   if (!confirmed) return;
 
   elements.restoreSyncButton.disabled = true;
@@ -2011,12 +2123,12 @@ async function restoreFromGoogleSheet() {
     state.lastSync = stateData.savedAt || new Date().toISOString();
     saveState();
     renderAll();
-    window.alert("구글시트 백업을 불러왔습니다.");
+    window.alert("구글시트 자료를 불러왔습니다.");
   } catch {
-    window.alert("구글시트 백업을 불러오지 못했습니다. Apps Script 배포 권한과 URL을 확인해주세요.");
+    window.alert("구글시트 자료를 불러오지 못했습니다. Apps Script 배포 권한과 URL을 확인해주세요.");
   } finally {
     elements.restoreSyncButton.disabled = false;
-    elements.restoreSyncButton.textContent = "구글시트에서 불러오기";
+    elements.restoreSyncButton.textContent = "구글시트 불러오기";
   }
 }
 
