@@ -1,4 +1,5 @@
 const STORAGE_KEY = "jecheon-field-app-v2";
+const REQUIRED_SCRIPT_VERSION = "delete-sync-2026-05-05";
 const appConfig = window.APP_CONFIG || {};
 const sourceData = window.SHEET_DATA || {};
 
@@ -41,6 +42,7 @@ const seedState = {
   summaryTab: "total",
   summaryFocus: {},
   extraSummaryItems: [],
+  deletedRecords: { work: [], material: [] },
   editingEntryId: "",
   editingMaterialId: "",
   draft: [],
@@ -918,17 +920,20 @@ async function deleteEntry(id) {
   const confirmed = window.confirm("이 업무현황 항목을 앱에서 삭제할까요?");
   if (!confirmed) return;
   state.entries = state.entries.filter((entry) => entry.id !== id);
+  markDeletedRecord("work", target);
   saveState();
   renderAll();
   if (target && getSyncEndpoint()) {
-    const deleted = await syncPayload("deleteWorkEntries", [target]);
-    if (deleted) {
+    await syncPayload("deleteWorkEntries", [target]);
+    await syncCurrentProjectSnapshot();
+    const verified = await verifyDeletedRecord("work", target);
+    if (verified) {
       await syncSharedBackup();
       state.lastSync = new Date().toISOString();
       saveState();
       renderSyncState();
     } else {
-      window.alert("앱에서는 삭제했지만 구글시트 삭제 요청에 실패했습니다. 환경설정의 구글시트로 보내기를 실행해주세요.");
+      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. Apps Script에 최신 google-apps-script-mini.gs 코드를 다시 붙여넣고 새 버전으로 배포해주세요.");
     }
   }
 }
@@ -1135,17 +1140,20 @@ async function deleteMaterialOrder(id) {
   const confirmed = window.confirm("이 자재현황 항목을 앱에서 삭제할까요?");
   if (!confirmed) return;
   state.materialOrders = state.materialOrders.filter((order) => order.id !== id);
+  markDeletedRecord("material", target);
   saveState();
   renderAll();
   if (target && getSyncEndpoint()) {
-    const deleted = await syncPayload("deleteMaterialOrders", [target]);
-    if (deleted) {
+    await syncPayload("deleteMaterialOrders", [target]);
+    await syncCurrentProjectSnapshot();
+    const verified = await verifyDeletedRecord("material", target);
+    if (verified) {
       await syncSharedBackup();
       state.lastSync = new Date().toISOString();
       saveState();
       renderSyncState();
     } else {
-      window.alert("앱에서는 삭제했지만 구글시트 삭제 요청에 실패했습니다. 환경설정의 구글시트로 보내기를 실행해주세요.");
+      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. Apps Script에 최신 google-apps-script-mini.gs 코드를 다시 붙여넣고 새 버전으로 배포해주세요.");
     }
   }
 }
@@ -1978,6 +1986,19 @@ function queueSharedBackup() {
   });
 }
 
+async function syncCurrentProjectSnapshot() {
+  const projectName = getActiveProjectName();
+  dedupeProjectState(projectName);
+  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName);
+  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName);
+  return syncPayload("replaceProjectData", [], {
+    workEntries: workRows,
+    materialOrders: materialRows,
+    summaryRows: buildSummarySnapshotRows(),
+    stateData: buildSharedStatePayload()
+  });
+}
+
 async function pushCurrentProjectToGoogleSheet() {
   if (syncingAll) return;
   if (!getSyncEndpoint()) {
@@ -1997,12 +2018,8 @@ async function pushCurrentProjectToGoogleSheet() {
 
   const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName);
   const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName);
-  const pushed = await syncPayload("replaceProjectData", [], {
-    workEntries: workRows,
-    materialOrders: materialRows,
-    summaryRows: buildSummarySnapshotRows(),
-    stateData: buildSharedStatePayload()
-  });
+  const pushed = await syncCurrentProjectSnapshot();
+  const verified = pushed ? await verifyDeletedRecordsCleared() : false;
 
   state.entries = state.entries.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
   state.materialOrders = state.materialOrders.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
@@ -2012,9 +2029,9 @@ async function pushCurrentProjectToGoogleSheet() {
 
   setManualSyncBusy(false);
   syncingAll = false;
-  window.alert(pushed
+  window.alert(pushed && verified
     ? `현재 앱 데이터 ${workRows.length + materialRows.length}건을 구글시트로 보냈습니다.`
-    : "구글시트로 보내기에 실패했습니다. Apps Script URL과 권한을 확인해주세요.");
+    : "요청은 보냈지만 구글시트 확인이 끝나지 않았습니다. 삭제 항목이 계속 보이면 Apps Script 최신 코드 배포를 확인해주세요.");
 }
 
 async function syncAllPending() {
@@ -2039,6 +2056,7 @@ function buildSharedStatePayload() {
     projects: state.projects,
     config: state.config,
     extraSummaryItems: projectExtraSummaryItems(),
+    deletedRecords: state.deletedRecords || { work: [], material: [] },
     summaryRange: {
       start: elements.summaryStart.value || "",
       end: elements.summaryEnd.value || ""
@@ -2090,14 +2108,23 @@ async function restoreFromGoogleSheet() {
     const backup = await loadSheetBackupJsonp();
     const projectName = getActiveProjectName();
     const stateData = backup.stateData || {};
+    if (backup.scriptVersion !== REQUIRED_SCRIPT_VERSION) {
+      window.alert("현재 연결된 Apps Script가 최신 삭제 동기화 버전이 아닙니다. google-apps-script-mini.gs를 Code.gs에 다시 붙여넣고 새 버전으로 배포해주세요.");
+    }
+    const mergedDeletedRecords = mergeDeletedRecords(state.deletedRecords, stateData.deletedRecords);
+    state.deletedRecords = mergedDeletedRecords;
 
     state.entries = [
       ...state.entries.filter((entry) => (entry.project || "제천2덕동골") !== projectName),
-      ...normalizeEntries(backup.workEntries || []).map((entry) => ({ ...entry, project: projectName, status: "synced" }))
+      ...normalizeEntries(backup.workEntries || [])
+        .map((entry) => ({ ...entry, project: projectName, status: "synced" }))
+        .filter((entry) => !isDeletedRecord("work", entry, projectName))
     ];
     state.materialOrders = [
       ...state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") !== projectName),
-      ...normalizeMaterialOrders(backup.materialOrders || []).map((order) => ({ ...order, project: projectName, status: "synced" }))
+      ...normalizeMaterialOrders(backup.materialOrders || [])
+        .map((order) => ({ ...order, project: projectName, status: "synced" }))
+        .filter((order) => !isDeletedRecord("material", order, projectName))
     ];
 
     if (stateData.config) {
@@ -2336,6 +2363,90 @@ function normalizeKeyPart(value) {
   return String(value ?? "").trim();
 }
 
+function markDeletedRecord(type, record) {
+  if (!record) return;
+  state.deletedRecords = normalizeDeletedRecords(state.deletedRecords);
+  const project = record.project || getActiveProjectName();
+  const key = type === "work" ? workContentKey(record) : materialContentKey(record);
+  const id = record.id || "";
+  const bucket = state.deletedRecords[type] || [];
+  state.deletedRecords[type] = [
+    ...bucket.filter((item) => !(item.project === project && (item.id === id || item.key === key))),
+    { project, id, key, deletedAt: new Date().toISOString() }
+  ].slice(-300);
+}
+
+function isDeletedRecord(type, record, projectName = getActiveProjectName()) {
+  const deleted = normalizeDeletedRecords(state.deletedRecords)[type] || [];
+  const key = type === "work" ? workContentKey(record) : materialContentKey(record);
+  const id = record.id || "";
+  const cutoff = Date.now() - 30 * 86400000;
+  return deleted.some((item) => {
+    if (item.project !== projectName) return false;
+    if (item.deletedAt && new Date(item.deletedAt).getTime() < cutoff) return false;
+    return (id && item.id === id) || item.key === key;
+  });
+}
+
+function normalizeDeletedRecords(value = {}) {
+  return {
+    work: Array.isArray(value.work) ? value.work : [],
+    material: Array.isArray(value.material) ? value.material : []
+  };
+}
+
+function mergeDeletedRecords(localValue = {}, remoteValue = {}) {
+  const local = normalizeDeletedRecords(localValue);
+  const remote = normalizeDeletedRecords(remoteValue);
+  return {
+    work: mergeDeletedBucket(local.work, remote.work),
+    material: mergeDeletedBucket(local.material, remote.material)
+  };
+}
+
+function mergeDeletedBucket(a = [], b = []) {
+  const map = new Map();
+  [...a, ...b].forEach((item) => {
+    if (!item || !item.project || !item.key) return;
+    map.set(`${item.project}|${item.id || ""}|${item.key}`, item);
+  });
+  return Array.from(map.values()).slice(-300);
+}
+
+async function verifyDeletedRecord(type, record) {
+  await wait(1200);
+  try {
+    const backup = await loadSheetBackupJsonp();
+    const rows = type === "work" ? normalizeEntries(backup.workEntries || []) : normalizeMaterialOrders(backup.materialOrders || []);
+    const key = type === "work" ? workContentKey(record) : materialContentKey(record);
+    const id = record.id || "";
+    return !rows.some((row) => (id && row.id === id) || (type === "work" ? workContentKey(row) : materialContentKey(row)) === key);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyDeletedRecordsCleared() {
+  const deleted = normalizeDeletedRecords(state.deletedRecords);
+  const projectName = getActiveProjectName();
+  const relevant = [...deleted.work, ...deleted.material].filter((item) => item.project === projectName);
+  if (!relevant.length) return true;
+  await wait(1200);
+  try {
+    const backup = await loadSheetBackupJsonp();
+    const workKeys = new Set(normalizeEntries(backup.workEntries || []).map(workContentKey));
+    const materialKeys = new Set(normalizeMaterialOrders(backup.materialOrders || []).map(materialContentKey));
+    return deleted.work.filter((item) => item.project === projectName).every((item) => !workKeys.has(item.key))
+      && deleted.material.filter((item) => item.project === projectName).every((item) => !materialKeys.has(item.key));
+  } catch {
+    return false;
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function calculateTotals(workRows, materialRows) {
   const laborCost = sum(workRows.filter((entry) => entry.costType === "인건비").map((entry) => Number(entry.cost || 0)));
   const equipmentCost = sum(workRows.filter((entry) => entry.costType === "장비대").map((entry) => Number(entry.cost || 0)));
@@ -2497,6 +2608,7 @@ function loadState() {
       materialOrders: parsed.materialOrders?.length ? parsed.materialOrders.map((order) => ({ ...order, project: order.project || "제천2덕동골" })) : clone(seedState.materialOrders),
       projects: mergeProjects(parsed.projects || [], clone(seedState.projects)),
       extraSummaryItems: (parsed.extraSummaryItems || []).map((item) => ({ ...item, project: item.project || "제천2덕동골", type: item.type || "spent" })),
+      deletedRecords: normalizeDeletedRecords(parsed.deletedRecords),
       editingEntryId: "",
       editingMaterialId: ""
     };
