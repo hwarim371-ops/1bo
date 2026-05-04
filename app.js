@@ -52,6 +52,9 @@ const seedState = {
 
 let state = loadState();
 const elements = {};
+let savingWork = false;
+let savingMaterial = false;
+let syncingAll = false;
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
@@ -625,6 +628,11 @@ function buildEntriesFromForm() {
 }
 
 async function commitWorkEntries() {
+  if (savingWork) return;
+  savingWork = true;
+  elements.entrySubmitButton.disabled = true;
+  elements.entrySubmitButton.textContent = "저장 중";
+  try {
   if (state.editingEntryId) {
     const entries = buildEntriesFromForm();
     if (!entries) return;
@@ -682,6 +690,11 @@ async function commitWorkEntries() {
   clearEntryDetailFields();
   setView("logs");
   renderAll();
+  } finally {
+    savingWork = false;
+    elements.entrySubmitButton.disabled = false;
+    renderEditState();
+  }
 }
 
 function updateEntrySyncStatus(savedEntries, status) {
@@ -979,6 +992,11 @@ async function saveInlineEntry(row) {
 }
 
 async function commitMaterialOrder() {
+  if (savingMaterial) return;
+  savingMaterial = true;
+  elements.materialSubmitButton.disabled = true;
+  elements.materialSubmitButton.textContent = "저장 중";
+  try {
   const editId = state.editingMaterialId;
   const order = {
     id: editId || cryptoId(),
@@ -1023,6 +1041,11 @@ async function commitMaterialOrder() {
 
   setView("materials");
   renderAll();
+  } finally {
+    savingMaterial = false;
+    elements.materialSubmitButton.disabled = false;
+    renderEditState();
+  }
 }
 
 function clearMaterialForm() {
@@ -1844,30 +1867,30 @@ async function syncSharedBackup() {
   if (!getSyncEndpoint()) return false;
   const appStateOk = await syncPayload("appState", [], { stateData: buildSharedStatePayload() });
   const summaryOk = await syncPayload("summarySnapshot", buildSummarySnapshotRows());
-  return appStateOk && summaryOk;
+  const cleanupOk = await syncPayload("cleanup", []);
+  return appStateOk && summaryOk && cleanupOk;
 }
 
 async function syncAllPending() {
+  if (syncingAll) return;
   if (!getSyncEndpoint()) {
     window.alert("환경설정에서 현재 프로젝트의 Apps Script 웹앱 URL을 먼저 저장해주세요.");
     setView("settings");
     return;
   }
+  syncingAll = true;
 
   const projectName = getActiveProjectName();
-  let workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
-  let materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
-
-  if (workRows.length === 0 && materialRows.length === 0) {
-    const sendAll = window.confirm("새 업무/자재 항목은 없습니다. 확인을 누르면 현재 프로젝트의 전체 업무/자재도 다시 전송합니다. 빈 시트를 처음 채울 때만 사용하세요. 취소를 누르면 최종현황과 환경설정 백업만 저장합니다.");
-    if (sendAll) {
-      workRows = projectEntries();
-      materialRows = projectMaterialOrders();
-    }
-  }
+  dedupeProjectState(projectName);
+  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
+  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName && ["local", "failed"].includes(entry.status));
 
   elements.exportButton.disabled = true;
   elements.exportButton.textContent = "저장 중";
+  if (elements.entrySyncButton) {
+    elements.entrySyncButton.disabled = true;
+    elements.entrySyncButton.textContent = "저장 중";
+  }
 
   const workOk = workRows.length ? await syncPayload("workEntries", workRows) : true;
   const materialOk = materialRows.length ? await syncPayload("materialOrders", materialRows) : true;
@@ -1884,7 +1907,17 @@ async function syncAllPending() {
 
   elements.exportButton.disabled = false;
   elements.exportButton.textContent = "구글시트에 저장";
-  window.alert(workOk && materialOk && backupOk ? "구글시트 저장과 앱 백업 요청을 보냈습니다." : "일부 저장 요청에 실패했습니다. Apps Script URL과 권한을 확인해주세요.");
+  if (elements.entrySyncButton) {
+    elements.entrySyncButton.disabled = false;
+    elements.entrySyncButton.textContent = "구글시트에 저장";
+  }
+  syncingAll = false;
+  const sentCount = workRows.length + materialRows.length;
+  window.alert(workOk && materialOk && backupOk
+    ? sentCount
+      ? `새 항목 ${sentCount}건과 앱 백업을 구글시트에 저장했습니다.`
+      : "새 업무/자재 항목은 없어 앱 백업만 저장했습니다."
+    : "일부 저장 요청에 실패했습니다. Apps Script URL과 권한을 확인해주세요.");
 }
 
 function buildSharedStatePayload() {
@@ -2122,6 +2155,73 @@ function projectMaterialOrders() {
 function projectExtraSummaryItems() {
   const name = getActiveProjectName();
   return state.extraSummaryItems.filter((entry) => (entry.project || "제천2덕동골") === name);
+}
+
+function dedupeProjectState(projectName = getActiveProjectName()) {
+  const beforeWork = state.entries.length;
+  const beforeMaterials = state.materialOrders.length;
+  state.entries = dedupeRecords(
+    state.entries,
+    (entry) => (entry.project || "제천2덕동골") === projectName,
+    workContentKey
+  );
+  state.materialOrders = dedupeRecords(
+    state.materialOrders,
+    (order) => (order.project || "제천2덕동골") === projectName,
+    materialContentKey
+  );
+  if (state.entries.length !== beforeWork || state.materialOrders.length !== beforeMaterials) {
+    saveState();
+  }
+}
+
+function dedupeRecords(records, inScope, keyGetter) {
+  const scoped = records.filter(inScope);
+  const scopedKeys = new Set();
+  const keepIds = new Set();
+  for (let index = scoped.length - 1; index >= 0; index -= 1) {
+    const record = scoped[index];
+    const key = keyGetter(record);
+    if (scopedKeys.has(key)) continue;
+    scopedKeys.add(key);
+    keepIds.add(record.id);
+  }
+  return records.filter((record) => !inScope(record) || keepIds.has(record.id));
+}
+
+function workContentKey(entry) {
+  return [
+    entry.date,
+    entry.mainProcess,
+    entry.subProcess,
+    entry.detailProcess,
+    entry.equipment,
+    entry.labor,
+    entry.workAmount,
+    entry.costType,
+    entry.cost,
+    entry.paymentStatus,
+    entry.memo
+  ].map(normalizeKeyPart).join("|");
+}
+
+function materialContentKey(order) {
+  return [
+    order.date,
+    order.process,
+    order.product,
+    order.vendor,
+    order.area,
+    order.orderAmount,
+    order.lowPrice,
+    order.highPrice,
+    order.memo,
+    order.creditAmount
+  ].map(normalizeKeyPart).join("|");
+}
+
+function normalizeKeyPart(value) {
+  return String(value ?? "").trim();
 }
 
 function calculateTotals(workRows, materialRows) {
