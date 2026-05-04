@@ -131,7 +131,9 @@
 
             <div class="form-actions">
               <button class="secondary-btn" id="addDraftButton" type="button">항목 추가</button>
-              <button class="primary-btn" type="submit">업무현황 저장</button>
+              <button class="secondary-btn hidden" id="cancelEntryEditButton" type="button">수정 취소</button>
+              <button class="primary-btn" id="entrySubmitButton" type="submit">업무현황 저장</button>
+              <button class="secondary-btn sync-save-btn" id="entrySyncButton" type="button">구글시트에 저장</button>
             </div>
 
             <div class="draft-tray hidden" id="draftTray">
@@ -153,9 +155,18 @@
               <h3>공정 일보 표</h3>
             </div>
             <div class="inline-filters">
-              <input id="logDateFilter" type="date" aria-label="날짜 필터">
+              <input id="logDateFilter" type="date" aria-label="시작일 필터">
+              <input id="logEndDateFilter" type="date" aria-label="종료일 필터">
               <select id="logProcessFilter" aria-label="공정 필터"></select>
               <button class="secondary-btn" id="clearLogFilters" type="button">초기화</button>
+            </div>
+          </div>
+          <div class="inline-edit-bar hidden" id="logEditBar">
+            <strong>업무현황 수정 중</strong>
+            <span>표 안의 값을 고친 뒤 저장하세요.</span>
+            <div class="row-actions">
+              <button class="primary-btn" id="logInlineSaveButton" type="button">수정 저장</button>
+              <button class="secondary-btn" id="logInlineCancelButton" type="button">취소</button>
             </div>
           </div>
           <div class="table-wrap">
@@ -175,6 +186,21 @@
                   <th>비고</th>
                   <th>상태</th>
                   <th>관리</th>
+                </tr>
+                <tr class="table-filter-row">
+                  <th><select id="logDateQuickFilter" aria-label="날짜 컬럼 필터"></select></th>
+                  <th><select id="logMainQuickFilter" aria-label="주공정 컬럼 필터"></select></th>
+                  <th><select id="logSubQuickFilter" aria-label="부공정 컬럼 필터"></select></th>
+                  <th><input id="logDetailFilter" type="search" placeholder="검색"></th>
+                  <th><select id="logEquipmentFilter" aria-label="장비 컬럼 필터"></select></th>
+                  <th><select id="logLaborFilter" aria-label="인부 컬럼 필터"></select></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                  <th><select id="logPaymentFilter" aria-label="결제여부 컬럼 필터"></select></th>
+                  <th><input id="logMemoFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="logTableBody"></tbody>
@@ -247,7 +273,8 @@
             </div>
 
             <div class="form-actions">
-              <button class="primary-btn" type="submit">자재현황 저장</button>
+              <button class="secondary-btn hidden" id="cancelMaterialEditButton" type="button">수정 취소</button>
+              <button class="primary-btn" id="materialSubmitButton" type="submit">자재현황 저장</button>
             </div>
           </form>
 
@@ -272,8 +299,19 @@
               <h3>자재 발주 현황 표</h3>
             </div>
             <div class="inline-filters">
+              <input id="materialStartDateFilter" type="date" aria-label="자재 시작일 필터">
+              <input id="materialEndDateFilter" type="date" aria-label="자재 종료일 필터">
               <select id="materialProcessFilter" aria-label="자재 공정 필터"></select>
               <input id="materialSearch" type="search" placeholder="제품·업체 검색">
+              <button class="secondary-btn" id="clearMaterialFilters" type="button">초기화</button>
+            </div>
+          </div>
+          <div class="inline-edit-bar hidden" id="materialEditBar">
+            <strong>자재현황 수정 중</strong>
+            <span>표 안의 값을 고친 뒤 저장하세요.</span>
+            <div class="row-actions">
+              <button class="primary-btn" id="materialInlineSaveButton" type="button">수정 저장</button>
+              <button class="secondary-btn" id="materialInlineCancelButton" type="button">취소</button>
             </div>
           </div>
           <div class="table-wrap">
@@ -291,6 +329,21 @@
                   <th>비고</th>
                   <th>외상금액</th>
                   <th>상태</th>
+                  <th>관리</th>
+                </tr>
+                <tr class="table-filter-row">
+                  <th><select id="materialDateQuickFilter" aria-label="자재 날짜 컬럼 필터"></select></th>
+                  <th><select id="materialProcessQuickFilter" aria-label="자재 공정 컬럼 필터"></select></th>
+                  <th><input id="materialProductFilter" type="search" placeholder="검색"></th>
+                  <th><input id="materialVendorFilter" type="search" placeholder="검색"></th>
+                  <th><input id="materialAreaFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                  <th><input id="materialMemoFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="materialTableBody"></tbody>
@@ -350,6 +403,22 @@
 
       <section class="view" id="view-settings" aria-labelledby="viewTitle">
         <div class="settings-stack">
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">프로젝트</p>
+                <h3>현장 추가 · 삭제</h3>
+              </div>
+              <span class="pill muted">구글시트 URL 연결</span>
+            </div>
+            <form class="project-add-form" id="projectAddForm">
+              <input id="newProjectName" type="text" placeholder="프로젝트명">
+              <input id="newProjectEndpoint" type="url" placeholder="Apps Script 웹앱 URL">
+              <button class="secondary-btn" type="submit">프로젝트 추가</button>
+            </form>
+            <div id="projectSettings" class="settings-list project-settings-list"></div>
+          </section>
+
           <section class="work-panel">
             <div class="section-heading">
               <div>
