@@ -1,5 +1,5 @@
 const STORAGE_KEY = "jecheon-field-app-v2";
-const REQUIRED_SCRIPT_VERSION = "contract-sync-2026-05-05";
+const REQUIRED_SCRIPT_VERSION = "contract-sync-2026-05-05b";
 const appConfig = window.APP_CONFIG || {};
 const sourceData = window.SHEET_DATA || {};
 
@@ -118,6 +118,7 @@ function cacheElements() {
     contractSelectionSummary: document.querySelector("#contractSelectionSummary"),
     contractTotalAmount: document.querySelector("#contractTotalAmount"),
     applyContractButton: document.querySelector("#applyContractButton"),
+    cancelContractButton: document.querySelector("#cancelContractButton"),
     clearContractSelection: document.querySelector("#clearContractSelection"),
     clearLogFilters: document.querySelector("#clearLogFilters"),
     logTableBody: document.querySelector("#logTableBody"),
@@ -249,6 +250,7 @@ function bindEvents() {
   elements.logInlineSaveButton.addEventListener("click", () => saveInlineEntry(elements.logTableBody.querySelector("[data-editing-entry]")));
   elements.logInlineCancelButton.addEventListener("click", cancelEntryEdit);
   elements.applyContractButton.addEventListener("click", applyContractDistribution);
+  elements.cancelContractButton.addEventListener("click", cancelContractDistribution);
   elements.clearContractSelection.addEventListener("click", clearContractSelection);
   elements.logDateFilter.addEventListener("change", renderLogs);
   elements.logEndDateFilter.addEventListener("change", renderLogs);
@@ -633,6 +635,8 @@ function buildEntriesFromForm() {
       contractFlag: false,
       contractTotal: "",
       contractGroupId: "",
+      contractOriginalCost: "",
+      contractOriginalCostType: "",
       status: "local",
       createdAt: new Date().toISOString()
     };
@@ -938,6 +942,11 @@ async function applyContractDistribution() {
     return;
   }
 
+  if (selected.some((entry) => !entry.labor || entry.equipment)) {
+    window.alert("도급계약 정산은 인건비 행만 선택해서 사용할 수 있습니다. 장비 행은 선택 해제해주세요.");
+    return;
+  }
+
   const total = normalizeContractAmount(elements.contractTotalAmount.value);
   if (!total) {
     window.alert("총 도급금액을 입력해주세요. 예: 210 또는 2100000");
@@ -969,11 +978,13 @@ async function applyContractDistribution() {
       updatedEntries.push({
         ...entry,
         cost: share,
-        costType: entry.equipment ? "장비대" : "인건비",
+        costType: "인건비",
         paymentStatus: entry.paymentStatus === "도급" ? "" : entry.paymentStatus,
         contractFlag: true,
         contractTotal: total,
         contractGroupId,
+        contractOriginalCost: hasStoredContractOriginal(entry) ? entry.contractOriginalCost : entry.cost,
+        contractOriginalCostType: hasStoredContractOriginal(entry) ? entry.contractOriginalCostType : entry.costType || "인건비",
         updatedAt: new Date().toISOString(),
         status: getSyncEndpoint() ? "sending" : "local"
       });
@@ -994,6 +1005,54 @@ async function applyContractDistribution() {
   }
 
   window.alert(`도급금액 ${formatMoney(total)}을 ${dateCount}일 기준으로 ${updatedEntries.length}건에 분배했습니다. 결제여부는 기존 값으로 유지했습니다.`);
+}
+
+async function cancelContractDistribution() {
+  const selected = contractSelectedEntries();
+  if (selected.length === 0) {
+    window.alert("도급을 취소할 업무현황 행을 먼저 선택해주세요.");
+    return;
+  }
+
+  const targets = selected.filter((entry) => entry.contractFlag);
+  if (targets.length === 0) {
+    window.alert("선택한 항목 중 도급 처리된 행이 없습니다.");
+    return;
+  }
+
+  const confirmed = window.confirm(`선택한 ${targets.length}건의 도급 표시를 취소할까요? 이전 비용 기록이 있는 항목은 원래 비용으로 되돌립니다.`);
+  if (!confirmed) return;
+
+  const updatedEntries = targets.map((entry) => ({
+    ...entry,
+    cost: hasStoredContractOriginal(entry) ? entry.contractOriginalCost : entry.cost,
+    costType: hasStoredContractOriginal(entry) ? entry.contractOriginalCostType || "인건비" : entry.costType || "인건비",
+    contractFlag: false,
+    contractTotal: "",
+    contractGroupId: "",
+    contractOriginalCost: "",
+    contractOriginalCostType: "",
+    updatedAt: new Date().toISOString(),
+    status: getSyncEndpoint() ? "sending" : "local"
+  }));
+
+  const updatedMap = new Map(updatedEntries.map((entry) => [entry.id, entry]));
+  state.entries = state.entries.map((entry) => updatedMap.get(entry.id) || entry);
+  saveState();
+  renderAll();
+
+  if (getSyncEndpoint()) {
+    const sent = await syncPayload("workEntries", updatedEntries);
+    updateEntrySyncStatus(updatedEntries, sent ? "sent" : "failed");
+    if (sent) await syncSharedBackup();
+    renderAll();
+  }
+
+  window.alert(`도급 처리 ${updatedEntries.length}건을 취소했습니다.`);
+}
+
+function hasStoredContractOriginal(entry) {
+  return entry.contractOriginalCost !== "" && entry.contractOriginalCost !== null && entry.contractOriginalCost !== undefined;
 }
 
 function contractSelectedEntries() {
@@ -1424,11 +1483,11 @@ function renderMaterialEditRow(order) {
     <td><input class="inline-cell" data-field="product" type="text" value="${escapeAttr(order.product || "")}"></td>
     <td><input class="inline-cell" data-field="vendor" type="text" value="${escapeAttr(order.vendor || "")}"></td>
     <td><input class="inline-cell" data-field="area" type="text" value="${escapeAttr(order.area || "")}"></td>
-    <td><input class="inline-cell" data-field="orderAmount" type="number" min="0" step="1000" value="${escapeAttr(order.orderAmount || "")}"></td>
-    <td><input class="inline-cell" data-field="lowPrice" type="number" min="0" step="1000" value="${escapeAttr(order.lowPrice || "")}"></td>
-    <td><input class="inline-cell" data-field="highPrice" type="number" min="0" step="1000" value="${escapeAttr(order.highPrice || "")}"></td>
+    <td><input class="inline-cell" data-field="orderAmount" type="number" min="0" step="1" value="${escapeAttr(order.orderAmount || "")}"></td>
+    <td><input class="inline-cell" data-field="lowPrice" type="number" min="0" step="1" value="${escapeAttr(order.lowPrice || "")}"></td>
+    <td><input class="inline-cell" data-field="highPrice" type="number" min="0" step="1" value="${escapeAttr(order.highPrice || "")}"></td>
     <td><input class="inline-cell" data-field="memo" type="text" value="${escapeAttr(order.memo || "")}"></td>
-    <td><input class="inline-cell" data-field="creditAmount" type="number" min="0" step="1000" value="${escapeAttr(order.creditAmount || "")}"></td>
+    <td><input class="inline-cell" data-field="creditAmount" type="number" min="0" step="1" value="${escapeAttr(order.creditAmount || "")}"></td>
     <td>${statusDotHtml("sending", "수정중")}</td>
     <td>
       <div class="row-actions">
@@ -2094,8 +2153,7 @@ async function syncSharedBackup() {
   if (!getSyncEndpoint()) return false;
   const appStateOk = await syncPayload("appState", [], { stateData: buildSharedStatePayload() });
   const summaryOk = await syncPayload("summarySnapshot", buildSummarySnapshotRows());
-  const cleanupOk = await syncPayload("cleanup", []);
-  return appStateOk && summaryOk && cleanupOk;
+  return appStateOk && summaryOk;
 }
 
 function queueSharedBackup() {
@@ -2433,17 +2491,17 @@ function dedupeProjectState(projectName = getActiveProjectName()) {
 function dedupeRecordsById(records, inScope) {
   const scoped = records.filter(inScope);
   const scopedIds = new Set();
-  const keepIds = new Set();
-  for (let index = scoped.length - 1; index >= 0; index -= 1) {
+  const keepRecords = new Set();
+  for (let index = 0; index < scoped.length; index += 1) {
     const record = scoped[index];
     if (!record.id) {
       record.id = cryptoId();
     }
     if (scopedIds.has(record.id)) continue;
     scopedIds.add(record.id);
-    keepIds.add(record.id);
+    keepRecords.add(record);
   }
-  return records.filter((record) => !inScope(record) || keepIds.has(record.id));
+  return records.filter((record) => !inScope(record) || keepRecords.has(record));
 }
 
 function workContentKey(entry) {
@@ -2686,6 +2744,8 @@ function normalizeEntries(entries = []) {
     paymentStatus: entry.paymentStatus === "도급" && Boolean(entry.contractFlag) ? "" : entry.paymentStatus || "",
     contractTotal: entry.contractTotal || "",
     contractGroupId: entry.contractGroupId || "",
+    contractOriginalCost: entry.contractOriginalCost ?? "",
+    contractOriginalCostType: entry.contractOriginalCostType || "",
     status: entry.status || "synced",
     createdAt: entry.createdAt || ""
   }));

@@ -285,6 +285,17 @@ button:focus-visible {
   background: #fff3df;
 }
 
+.danger-lite {
+  border-color: rgba(173, 62, 50, 0.34);
+  color: var(--red);
+  background: #fff7ef;
+}
+
+.danger-lite:hover {
+  border-color: rgba(173, 62, 50, 0.56);
+  background: #ffe9df;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -697,7 +708,7 @@ label span {
 
 .contract-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 220px) auto auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 220px) auto auto auto;
   gap: 10px;
   align-items: center;
   margin-bottom: 10px;
