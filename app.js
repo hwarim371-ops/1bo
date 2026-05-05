@@ -933,7 +933,7 @@ async function deleteEntry(id) {
       saveState();
       renderSyncState();
     } else {
-      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. Apps Script에 최신 google-apps-script-mini.gs 코드를 다시 붙여넣고 새 버전으로 배포해주세요.");
+      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. app-config.js의 URL이 새 Apps Script 배포 URL인지 확인하고, 앱을 Ctrl+F5로 새로고침해주세요.");
     }
   }
 }
@@ -1153,7 +1153,7 @@ async function deleteMaterialOrder(id) {
       saveState();
       renderSyncState();
     } else {
-      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. Apps Script에 최신 google-apps-script-mini.gs 코드를 다시 붙여넣고 새 버전으로 배포해주세요.");
+      window.alert("앱에서는 삭제했지만 구글시트에는 아직 남아 있습니다. app-config.js의 URL이 새 Apps Script 배포 URL인지 확인하고, 앱을 Ctrl+F5로 새로고침해주세요.");
     }
   }
 }
@@ -2108,9 +2108,7 @@ async function restoreFromGoogleSheet() {
     const backup = await loadSheetBackupJsonp();
     const projectName = getActiveProjectName();
     const stateData = backup.stateData || {};
-    if (backup.scriptVersion !== REQUIRED_SCRIPT_VERSION) {
-      window.alert("현재 연결된 Apps Script가 최신 삭제 동기화 버전이 아닙니다. google-apps-script-mini.gs를 Code.gs에 다시 붙여넣고 새 버전으로 배포해주세요.");
-    }
+    const scriptIsCurrent = backup.scriptVersion === REQUIRED_SCRIPT_VERSION;
     const mergedDeletedRecords = mergeDeletedRecords(state.deletedRecords, stateData.deletedRecords);
     state.deletedRecords = mergedDeletedRecords;
 
@@ -2150,7 +2148,9 @@ async function restoreFromGoogleSheet() {
     state.lastSync = stateData.savedAt || new Date().toISOString();
     saveState();
     renderAll();
-    window.alert("구글시트 자료를 불러왔습니다.");
+    window.alert(scriptIsCurrent
+      ? "구글시트 자료를 불러왔습니다."
+      : "구글시트 자료를 불러왔습니다. 단, 현재 앱이 예전 Apps Script URL을 보고 있을 수 있으니 app-config.js URL과 Ctrl+F5 새로고침을 확인해주세요.");
   } catch {
     window.alert("구글시트 자료를 불러오지 못했습니다. Apps Script 배포 권한과 URL을 확인해주세요.");
   } finally {
@@ -2533,8 +2533,8 @@ function mergeProjects(savedProjects = [], configuredProjects = []) {
       ...configured,
       ...saved,
       name,
-      syncEndpoint: saved.syncEndpoint || configured.syncEndpoint || "",
-      spreadsheetId: saved.spreadsheetId || configured.spreadsheetId || ""
+      syncEndpoint: configured.syncEndpoint || saved.syncEndpoint || "",
+      spreadsheetId: configured.spreadsheetId || saved.spreadsheetId || ""
     };
   });
 }
