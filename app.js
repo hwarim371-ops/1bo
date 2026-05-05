@@ -925,7 +925,6 @@ async function deleteEntry(id) {
   renderAll();
   if (target && getSyncEndpoint()) {
     await syncPayload("deleteWorkEntries", [target]);
-    await syncCurrentProjectSnapshot();
     const verified = await verifyDeletedRecord("work", target);
     if (verified) {
       await syncSharedBackup();
@@ -1145,7 +1144,6 @@ async function deleteMaterialOrder(id) {
   renderAll();
   if (target && getSyncEndpoint()) {
     await syncPayload("deleteMaterialOrders", [target]);
-    await syncCurrentProjectSnapshot();
     const verified = await verifyDeletedRecord("material", target);
     if (verified) {
       await syncSharedBackup();
