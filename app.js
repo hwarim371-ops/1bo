@@ -1,5 +1,5 @@
 const STORAGE_KEY = "jecheon-field-app-v2";
-const REQUIRED_SCRIPT_VERSION = "delete-sync-2026-05-05";
+const REQUIRED_SCRIPT_VERSION = "contract-sync-2026-05-05";
 const appConfig = window.APP_CONFIG || {};
 const sourceData = window.SHEET_DATA || {};
 
@@ -57,6 +57,7 @@ const elements = {};
 let savingWork = false;
 let savingMaterial = false;
 let syncingAll = false;
+let selectedContractEntryIds = new Set();
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheElements();
@@ -69,6 +70,7 @@ function cacheElements() {
   Object.assign(elements, {
     todayLabel: document.querySelector("#todayLabel"),
     viewTitle: document.querySelector("#viewTitle"),
+    brandProjectTitle: document.querySelector("#brandProjectTitle"),
     projectSelect: document.querySelector("#projectSelect"),
     sidebarStatus: document.querySelector("#sidebarStatus"),
     navItems: Array.from(document.querySelectorAll(".nav-item")),
@@ -112,6 +114,11 @@ function cacheElements() {
     logEditBar: document.querySelector("#logEditBar"),
     logInlineSaveButton: document.querySelector("#logInlineSaveButton"),
     logInlineCancelButton: document.querySelector("#logInlineCancelButton"),
+    contractToolbar: document.querySelector("#contractToolbar"),
+    contractSelectionSummary: document.querySelector("#contractSelectionSummary"),
+    contractTotalAmount: document.querySelector("#contractTotalAmount"),
+    applyContractButton: document.querySelector("#applyContractButton"),
+    clearContractSelection: document.querySelector("#clearContractSelection"),
     clearLogFilters: document.querySelector("#clearLogFilters"),
     logTableBody: document.querySelector("#logTableBody"),
     materialForm: document.querySelector("#materialForm"),
@@ -241,6 +248,8 @@ function bindEvents() {
   elements.cancelEntryEditButton.addEventListener("click", cancelEntryEdit);
   elements.logInlineSaveButton.addEventListener("click", () => saveInlineEntry(elements.logTableBody.querySelector("[data-editing-entry]")));
   elements.logInlineCancelButton.addEventListener("click", cancelEntryEdit);
+  elements.applyContractButton.addEventListener("click", applyContractDistribution);
+  elements.clearContractSelection.addEventListener("click", clearContractSelection);
   elements.logDateFilter.addEventListener("change", renderLogs);
   elements.logEndDateFilter.addEventListener("change", renderLogs);
   elements.logProcessFilter.addEventListener("change", renderLogs);
@@ -401,12 +410,13 @@ function renderProjectOptions() {
     ? current
     : state.projects[0]?.name || "제천2덕동골";
   state.activeProject = elements.projectSelect.value;
+  if (elements.brandProjectTitle) elements.brandProjectTitle.textContent = state.activeProject || "현장 프로젝트";
 }
 
 function renderNavigation() {
   if (!views[state.activeView]) state.activeView = "input";
   elements.viewTitle.textContent = views[state.activeView];
-  document.querySelector(".brand-block h1").textContent = state.activeProject || "제천2덕동골";
+  if (elements.brandProjectTitle) elements.brandProjectTitle.textContent = state.activeProject || "현장 프로젝트";
 
   elements.navItems.forEach((button) => {
     button.classList.toggle("active", button.dataset.view === state.activeView);
@@ -485,7 +495,8 @@ function getSubProcesses(mainProcess) {
 
 function optionsHtml(values, selected, labels = {}) {
   const hasBlank = values.some((value) => value === "");
-  const list = hasBlank ? ["", ...uniqueValues(values)] : uniqueValues(values);
+  const source = selected && !values.includes(selected) ? [...values, selected] : values;
+  const list = hasBlank ? ["", ...uniqueValues(source)] : uniqueValues(source);
   return list.map((value) => {
     const text = labels[value] || value || "선택 안 함";
     return `<option value="${escapeAttr(value)}" ${String(value) === String(selected || "") ? "selected" : ""}>${escapeHtml(text)}</option>`;
@@ -619,6 +630,9 @@ function buildEntriesFromForm() {
       cost,
       paymentStatus: row.querySelector(".resource-payment")?.value || "",
       memo: elements.entryMemo.value.trim(),
+      contractFlag: false,
+      contractTotal: "",
+      contractGroupId: "",
       status: "local",
       createdAt: new Date().toISOString()
     };
@@ -808,7 +822,9 @@ function renderLogs() {
   const memoText = elements.logMemoFilter.value.trim().toLowerCase();
   const canManage = state.role === "manager";
   const sourceRows = projectEntries();
+  selectedContractEntryIds = new Set([...selectedContractEntryIds].filter((id) => sourceRows.some((entry) => entry.id === id)));
   renderLogColumnFilters(sourceRows);
+  renderContractToolbar();
 
   const rows = sourceRows.filter((entry) => {
     const dateMatch = (!startFilter || entry.date >= startFilter) && (!endFilter || entry.date <= endFilter);
@@ -828,7 +844,7 @@ function renderLogs() {
 
   if (rows.length === 0) {
     const row = document.createElement("tr");
-    row.innerHTML = `<td colspan="13">${emptyState().outerHTML}</td>`;
+    row.innerHTML = `<td colspan="14">${emptyState().outerHTML}</td>`;
     elements.logTableBody.append(row);
     return;
   }
@@ -853,10 +869,11 @@ function renderLogs() {
       <td>${formatMoney(entry.cost)}</td>
       <td>${escapeHtml(entry.paymentStatus || "")}</td>
       <td>${escapeHtml(entry.memo || "")}</td>
-      <td><span class="status-badge ${entry.status === "failed" ? "pending" : "done"}">${syncLabels[entry.status] || entry.status}</span></td>
+      <td><label class="contract-check-label" title="도급 정리 선택"><input type="checkbox" data-contract-select="${entry.id}" ${selectedContractEntryIds.has(entry.id) ? "checked" : ""}><span>${entry.contractFlag ? "도급" : ""}</span></label></td>
+      <td>${statusDotHtml(entry.status)}</td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn" type="button" title="수정" data-edit="${entry.id}" ${canManage ? "" : "disabled"}>수정</button>
+          <button class="icon-btn approve" type="button" title="수정" data-edit="${entry.id}" ${canManage ? "" : "disabled"}>√</button>
           <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage ? "" : "disabled"}>X</button>
         </div>
       </td>
@@ -879,6 +896,9 @@ function renderLogs() {
   elements.logTableBody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteEntry(button.dataset.delete));
   });
+  elements.logTableBody.querySelectorAll("[data-contract-select]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => toggleContractSelection(checkbox.dataset.contractSelect, checkbox.checked));
+  });
 }
 
 function renderLogColumnFilters(rows) {
@@ -888,6 +908,109 @@ function renderLogColumnFilters(rows) {
   fillFilterSelect(elements.logEquipmentFilter, uniqueValues(rows.map((entry) => entry.equipment)), "전체");
   fillFilterSelect(elements.logLaborFilter, uniqueValues(rows.map((entry) => entry.labor)), "전체");
   fillFilterSelect(elements.logPaymentFilter, uniqueValues(rows.map((entry) => entry.paymentStatus)), "전체");
+}
+
+function toggleContractSelection(id, checked) {
+  if (!id) return;
+  if (checked) selectedContractEntryIds.add(id);
+  else selectedContractEntryIds.delete(id);
+  renderContractToolbar();
+}
+
+function clearContractSelection() {
+  selectedContractEntryIds.clear();
+  elements.contractTotalAmount.value = "";
+  renderLogs();
+}
+
+function renderContractToolbar() {
+  const selected = contractSelectedEntries();
+  elements.contractToolbar.classList.toggle("hidden", selected.length === 0);
+  if (selected.length === 0) return;
+  const dateCount = countUnique(selected.map((entry) => entry.date));
+  elements.contractSelectionSummary.textContent = `선택 ${selected.length}건 · ${dateCount}일`;
+}
+
+async function applyContractDistribution() {
+  const selected = contractSelectedEntries().sort(compareDateAsc);
+  if (selected.length === 0) {
+    window.alert("도급으로 정리할 업무현황 행을 먼저 선택해주세요.");
+    return;
+  }
+
+  const total = normalizeContractAmount(elements.contractTotalAmount.value);
+  if (!total) {
+    window.alert("총 도급금액을 입력해주세요. 예: 210 또는 2100000");
+    return;
+  }
+
+  const byDate = new Map();
+  selected.forEach((entry) => {
+    const date = entry.date || "날짜 미입력";
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push(entry);
+  });
+
+  const dateCount = byDate.size || 1;
+  const dailyAmount = Math.floor(total / dateCount);
+  let distributed = 0;
+  const contractGroupId = cryptoId();
+  const updatedEntries = [];
+  const sortedDates = Array.from(byDate.keys()).sort();
+
+  sortedDates.forEach((date, dateIndex) => {
+    const rows = byDate.get(date);
+    const dayTotal = dateIndex === sortedDates.length - 1 ? total - distributed : dailyAmount;
+    const baseShare = Math.floor(dayTotal / rows.length);
+    let dayDistributed = 0;
+    rows.forEach((entry, rowIndex) => {
+      const share = rowIndex === rows.length - 1 ? dayTotal - dayDistributed : baseShare;
+      dayDistributed += share;
+      updatedEntries.push({
+        ...entry,
+        cost: share,
+        costType: entry.equipment ? "장비대" : "인건비",
+        paymentStatus: entry.paymentStatus === "도급" ? "" : entry.paymentStatus,
+        contractFlag: true,
+        contractTotal: total,
+        contractGroupId,
+        updatedAt: new Date().toISOString(),
+        status: getSyncEndpoint() ? "sending" : "local"
+      });
+    });
+    distributed += dayTotal;
+  });
+
+  const updatedMap = new Map(updatedEntries.map((entry) => [entry.id, entry]));
+  state.entries = state.entries.map((entry) => updatedMap.get(entry.id) || entry);
+  saveState();
+  renderAll();
+
+  if (getSyncEndpoint()) {
+    const sent = await syncPayload("workEntries", updatedEntries);
+    updateEntrySyncStatus(updatedEntries, sent ? "sent" : "failed");
+    if (sent) await syncSharedBackup();
+    renderAll();
+  }
+
+  window.alert(`도급금액 ${formatMoney(total)}을 ${dateCount}일 기준으로 ${updatedEntries.length}건에 분배했습니다. 결제여부는 기존 값으로 유지했습니다.`);
+}
+
+function contractSelectedEntries() {
+  const projectName = getActiveProjectName();
+  return state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName && selectedContractEntryIds.has(entry.id));
+}
+
+function normalizeContractAmount(value) {
+  const number = numberOrBlank(value);
+  if (!number) return 0;
+  return number < 10000 ? number * 10000 : number;
+}
+
+function statusDotHtml(status, label) {
+  const text = label || syncLabels[status] || status || "상태";
+  const tone = status === "failed" ? "red" : ["local", "sending"].includes(status) ? "yellow" : "green";
+  return `<span class="status-dot-badge ${tone}" title="${escapeAttr(text)}" aria-label="${escapeAttr(text)}"></span>`;
 }
 
 function renderEntryEditRow(entry) {
@@ -905,11 +1028,12 @@ function renderEntryEditRow(entry) {
     <td><input class="inline-cell" data-field="cost" type="number" min="0" step="1000" value="${escapeAttr(entry.cost || "")}"></td>
     <td><select class="inline-cell" data-field="paymentStatus">${optionsHtml(["", ...state.config.payments], entry.paymentStatus)}</select></td>
     <td><input class="inline-cell" data-field="memo" type="text" value="${escapeAttr(entry.memo || "")}"></td>
-    <td><span class="status-badge pending">수정중</span></td>
+    <td><span class="contract-marker ${entry.contractFlag ? "active" : ""}">${entry.contractFlag ? "도급" : "-"}</span></td>
+    <td>${statusDotHtml("sending", "수정중")}</td>
     <td>
       <div class="row-actions">
-        <button class="icon-btn approve" type="button" data-save-entry>저장</button>
-        <button class="icon-btn" type="button" data-cancel-entry>취소</button>
+        <button class="icon-btn approve" type="button" title="저장" data-save-entry>√</button>
+        <button class="icon-btn" type="button" title="취소" data-cancel-entry>X</button>
       </div>
     </td>
   `;
@@ -1262,10 +1386,10 @@ function renderMaterialTable() {
       <td>${formatMoney(order.highPrice)}</td>
       <td>${escapeHtml(order.memo)}</td>
       <td>${formatMoney(order.creditAmount)}</td>
-      <td><span class="status-badge ${order.status === "failed" ? "pending" : "done"}">${syncLabels[order.status] || order.status || "원본"}</span></td>
+      <td>${statusDotHtml(order.status)}</td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn" type="button" title="수정" data-edit-material="${order.id}">수정</button>
+          <button class="icon-btn approve" type="button" title="수정" data-edit-material="${order.id}">√</button>
           <button class="icon-btn delete" type="button" title="삭제" data-delete-material="${order.id}">X</button>
         </div>
       </td>
@@ -1305,11 +1429,11 @@ function renderMaterialEditRow(order) {
     <td><input class="inline-cell" data-field="highPrice" type="number" min="0" step="1000" value="${escapeAttr(order.highPrice || "")}"></td>
     <td><input class="inline-cell" data-field="memo" type="text" value="${escapeAttr(order.memo || "")}"></td>
     <td><input class="inline-cell" data-field="creditAmount" type="number" min="0" step="1000" value="${escapeAttr(order.creditAmount || "")}"></td>
-    <td><span class="status-badge pending">수정중</span></td>
+    <td>${statusDotHtml("sending", "수정중")}</td>
     <td>
       <div class="row-actions">
-        <button class="icon-btn approve" type="button" data-save-material>저장</button>
-        <button class="icon-btn" type="button" data-cancel-material>취소</button>
+        <button class="icon-btn approve" type="button" title="저장" data-save-material>√</button>
+        <button class="icon-btn" type="button" title="취소" data-cancel-material>X</button>
       </div>
     </td>
   `;
@@ -1692,7 +1816,7 @@ function buildProcessCostRows(workRows, materialRows) {
 }
 
 function buildPaymentRows(workRows, materialRows) {
-  const payment = groupSum(workRows, (row) => row.paymentStatus || "결제 미입력", (row) => Number(row.cost || 0));
+  const payment = groupSum(workRows, (row) => row.paymentStatus === "도급" ? "결제 미입력" : row.paymentStatus || "결제 미입력", (row) => Number(row.cost || 0));
   const credit = sum(materialRows.map((row) => Number(row.creditAmount || 0)));
   const extraCredits = projectExtraSummaryItems()
     .filter((item) => item.type === "credit")
@@ -2148,7 +2272,7 @@ async function restoreFromGoogleSheet() {
     renderAll();
     window.alert(scriptIsCurrent
       ? "구글시트 자료를 불러왔습니다."
-      : "구글시트 자료를 불러왔습니다. 단, 현재 앱이 예전 Apps Script URL을 보고 있을 수 있으니 app-config.js URL과 Ctrl+F5 새로고침을 확인해주세요.");
+      : "구글시트 자료를 불러왔습니다. 단, 현재 앱이 도급 동기화 최신 Apps Script를 보고 있지 않을 수 있으니 app-config.js URL과 Ctrl+F5 새로고침을 확인해주세요.");
   } catch {
     window.alert("구글시트 자료를 불러오지 못했습니다. Apps Script 배포 권한과 URL을 확인해주세요.");
   } finally {
@@ -2214,7 +2338,7 @@ function exportCsv() {
     return;
   }
 
-  const headers = ["날짜", "주공정", "부공정", "세부공정", "장비", "인부", "투입공수", "비용 구분", "비용", "결제여부", "비고"];
+  const headers = ["날짜", "주공정", "부공정", "세부공정", "장비", "인부", "투입공수", "비용 구분", "비용", "결제여부", "비고", "도급", "도급총액"];
   const rows = state.entries.map((entry) => [
     entry.date,
     entry.mainProcess,
@@ -2226,7 +2350,9 @@ function exportCsv() {
     entry.costType,
     entry.cost,
     entry.paymentStatus,
-    entry.memo
+    entry.memo,
+    entry.contractFlag ? "Y" : "",
+    entry.contractTotal || ""
   ]);
 
   downloadCsv([headers, ...rows], `jecheon-worklog-${isoToday}.csv`);
@@ -2297,30 +2423,24 @@ function projectExtraSummaryItems() {
 function dedupeProjectState(projectName = getActiveProjectName()) {
   const beforeWork = state.entries.length;
   const beforeMaterials = state.materialOrders.length;
-  state.entries = dedupeRecords(
-    state.entries,
-    (entry) => (entry.project || "제천2덕동골") === projectName,
-    workContentKey
-  );
-  state.materialOrders = dedupeRecords(
-    state.materialOrders,
-    (order) => (order.project || "제천2덕동골") === projectName,
-    materialContentKey
-  );
+  state.entries = dedupeRecordsById(state.entries, (entry) => (entry.project || "제천2덕동골") === projectName);
+  state.materialOrders = dedupeRecordsById(state.materialOrders, (order) => (order.project || "제천2덕동골") === projectName);
   if (state.entries.length !== beforeWork || state.materialOrders.length !== beforeMaterials) {
     saveState();
   }
 }
 
-function dedupeRecords(records, inScope, keyGetter) {
+function dedupeRecordsById(records, inScope) {
   const scoped = records.filter(inScope);
-  const scopedKeys = new Set();
+  const scopedIds = new Set();
   const keepIds = new Set();
   for (let index = scoped.length - 1; index >= 0; index -= 1) {
     const record = scoped[index];
-    const key = keyGetter(record);
-    if (scopedKeys.has(key)) continue;
-    scopedKeys.add(key);
+    if (!record.id) {
+      record.id = cryptoId();
+    }
+    if (scopedIds.has(record.id)) continue;
+    scopedIds.add(record.id);
     keepIds.add(record.id);
   }
   return records.filter((record) => !inScope(record) || keepIds.has(record.id));
@@ -2369,20 +2489,20 @@ function markDeletedRecord(type, record) {
   const id = record.id || "";
   const bucket = state.deletedRecords[type] || [];
   state.deletedRecords[type] = [
-    ...bucket.filter((item) => !(item.project === project && (item.id === id || item.key === key))),
+    ...bucket.filter((item) => !(item.project === project && (id ? item.id === id : item.key === key))),
     { project, id, key, deletedAt: new Date().toISOString() }
   ].slice(-300);
 }
 
 function isDeletedRecord(type, record, projectName = getActiveProjectName()) {
   const deleted = normalizeDeletedRecords(state.deletedRecords)[type] || [];
-  const key = type === "work" ? workContentKey(record) : materialContentKey(record);
   const id = record.id || "";
+  if (!id) return false;
   const cutoff = Date.now() - 30 * 86400000;
   return deleted.some((item) => {
     if (item.project !== projectName) return false;
     if (item.deletedAt && new Date(item.deletedAt).getTime() < cutoff) return false;
-    return (id && item.id === id) || item.key === key;
+    return item.id === id;
   });
 }
 
@@ -2416,9 +2536,8 @@ async function verifyDeletedRecord(type, record) {
   try {
     const backup = await loadSheetBackupJsonp();
     const rows = type === "work" ? normalizeEntries(backup.workEntries || []) : normalizeMaterialOrders(backup.materialOrders || []);
-    const key = type === "work" ? workContentKey(record) : materialContentKey(record);
     const id = record.id || "";
-    return !rows.some((row) => (id && row.id === id) || (type === "work" ? workContentKey(row) : materialContentKey(row)) === key);
+    return !id || !rows.some((row) => row.id === id);
   } catch {
     return false;
   }
@@ -2432,10 +2551,10 @@ async function verifyDeletedRecordsCleared() {
   await wait(1200);
   try {
     const backup = await loadSheetBackupJsonp();
-    const workKeys = new Set(normalizeEntries(backup.workEntries || []).map(workContentKey));
-    const materialKeys = new Set(normalizeMaterialOrders(backup.materialOrders || []).map(materialContentKey));
-    return deleted.work.filter((item) => item.project === projectName).every((item) => !workKeys.has(item.key))
-      && deleted.material.filter((item) => item.project === projectName).every((item) => !materialKeys.has(item.key));
+    const workIds = new Set(normalizeEntries(backup.workEntries || []).map((entry) => entry.id).filter(Boolean));
+    const materialIds = new Set(normalizeMaterialOrders(backup.materialOrders || []).map((order) => order.id).filter(Boolean));
+    return deleted.work.filter((item) => item.project === projectName && item.id).every((item) => !workIds.has(item.id))
+      && deleted.material.filter((item) => item.project === projectName && item.id).every((item) => !materialIds.has(item.id));
   } catch {
     return false;
   }
@@ -2542,7 +2661,7 @@ function normalizeConfig(config = {}) {
     processes: config.processes?.length ? config.processes : [],
     equipment: config.equipment?.length ? config.equipment : [],
     labor: config.labor?.length ? config.labor : [],
-    payments: config.payments?.length ? config.payments : [],
+    payments: config.payments?.length ? config.payments.filter((item) => item !== "도급") : [],
     workAmounts: [1, 0.5],
     costTypes: config.costTypes?.length ? config.costTypes : ["장비대", "인건비"]
   };
@@ -2562,8 +2681,11 @@ function normalizeEntries(entries = []) {
     workAmount: entry.workAmount || "",
     costType: entry.costType || "",
     cost: entry.cost || "",
-    paymentStatus: entry.paymentStatus || "",
     memo: entry.memo || "",
+    contractFlag: Boolean(entry.contractFlag),
+    paymentStatus: entry.paymentStatus === "도급" && Boolean(entry.contractFlag) ? "" : entry.paymentStatus || "",
+    contractTotal: entry.contractTotal || "",
+    contractGroupId: entry.contractGroupId || "",
     status: entry.status || "synced",
     createdAt: entry.createdAt || ""
   }));
@@ -2602,14 +2724,15 @@ function loadState() {
         ...clone(seedState.config),
         ...parsed.config
       },
-      entries: parsed.entries?.length ? parsed.entries.map((entry) => ({ ...entry, project: entry.project || "제천2덕동골" })) : clone(seedState.entries),
-      materialOrders: parsed.materialOrders?.length ? parsed.materialOrders.map((order) => ({ ...order, project: order.project || "제천2덕동골" })) : clone(seedState.materialOrders),
+      entries: parsed.entries?.length ? normalizeEntries(parsed.entries).map((entry) => ({ ...entry, project: entry.project || "제천2덕동골" })) : clone(seedState.entries),
+      materialOrders: parsed.materialOrders?.length ? normalizeMaterialOrders(parsed.materialOrders).map((order) => ({ ...order, project: order.project || "제천2덕동골" })) : clone(seedState.materialOrders),
       projects: mergeProjects(parsed.projects || [], clone(seedState.projects)),
       extraSummaryItems: (parsed.extraSummaryItems || []).map((item) => ({ ...item, project: item.project || "제천2덕동골", type: item.type || "spent" })),
       deletedRecords: normalizeDeletedRecords(parsed.deletedRecords),
       editingEntryId: "",
       editingMaterialId: ""
     };
+    loaded.config = normalizeConfig(loaded.config);
     if (loaded.syncEndpoint && loaded.projects[0] && !loaded.projects[0].syncEndpoint) {
       loaded.projects[0].syncEndpoint = loaded.syncEndpoint;
     }

@@ -62,7 +62,7 @@ button {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 14px;
   padding: 22px 18px;
   background:
     repeating-linear-gradient(90deg, rgba(79, 45, 19, 0.035) 0 1px, transparent 1px 22px),
@@ -74,8 +74,7 @@ button {
   display: flex;
   gap: 12px;
   align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
 }
 
 .brand-mark {
@@ -109,6 +108,34 @@ h1 {
   font-size: 19px;
 }
 
+.sidebar-project {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid rgba(122, 77, 36, 0.24);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 242, 0.88), rgba(239, 225, 204, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.sidebar-project label {
+  color: var(--teal-strong);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sidebar-project select {
+  min-height: 38px;
+  padding: 7px 10px;
+  border-color: #c29c67;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  background:
+    linear-gradient(180deg, #fffaf2, #f5e5cb);
+}
+
 h2 {
   font-size: clamp(22px, 2.3vw, 32px);
 }
@@ -124,16 +151,17 @@ h4 {
 
 .nav-list {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .nav-item {
   width: 100%;
-  min-height: 44px;
-  padding: 0 13px;
+  min-height: 36px;
+  padding: 0 11px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: var(--muted);
+  font-size: 13px;
   font-weight: 700;
   text-align: left;
   background: transparent;
@@ -667,9 +695,33 @@ label span {
   font-weight: 700;
 }
 
+.contract-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 220px) auto auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid rgba(122, 77, 36, 0.24);
+  border-radius: 8px;
+  background: linear-gradient(145deg, #fff6e9, #ead7ba);
+  box-shadow: 0 12px 26px rgba(70, 42, 18, 0.08);
+}
+
+.contract-toolbar strong {
+  display: block;
+  font-size: 14px;
+}
+
+.contract-toolbar span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1160px;
   border-collapse: collapse;
   background: #fffaf2;
 }
@@ -681,6 +733,82 @@ td {
   text-align: left;
   vertical-align: top;
   font-size: 14px;
+}
+
+.compact-view .work-panel {
+  padding: 12px;
+  box-shadow: 0 10px 24px rgba(70, 42, 18, 0.09);
+}
+
+.compact-view .section-heading {
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.compact-view .section-heading h3 {
+  font-size: 16px;
+}
+
+.compact-view .inline-filters {
+  gap: 6px;
+}
+
+.compact-view .inline-filters input,
+.compact-view .inline-filters select,
+.compact-view .inline-filters button {
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.compact-view .table-wrap {
+  border-radius: 6px;
+}
+
+.compact-view table {
+  min-width: 1040px;
+}
+
+.compact-view .data-table {
+  min-width: 980px;
+}
+
+.compact-view .material-table {
+  min-width: 940px;
+}
+
+.compact-view th,
+.compact-view td {
+  padding: 7px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.compact-view th {
+  font-size: 11px;
+}
+
+.compact-view .table-filter-row th {
+  top: 31px;
+  padding: 4px;
+}
+
+.compact-view .table-filter-row input,
+.compact-view .table-filter-row select,
+.compact-view .inline-cell {
+  min-height: 28px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.compact-view .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.compact-view .data-table th:last-child,
+.compact-view .data-table td:last-child {
+  min-width: 86px;
 }
 
 th {
@@ -716,6 +844,31 @@ th {
 
 .inline-cell[type="number"] {
   min-width: 98px;
+}
+
+.contract-check-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 64px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.contract-check-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teal);
+}
+
+.contract-marker {
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.contract-marker.active {
+  color: var(--teal-strong);
 }
 
 .data-table td {
@@ -770,6 +923,28 @@ tr:last-child td {
 .status-badge.done {
   color: var(--teal-strong);
   background: var(--green-soft);
+}
+
+.status-dot-badge {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #fffaf2;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(70, 42, 18, 0.18), 0 5px 12px rgba(70, 42, 18, 0.16);
+  vertical-align: middle;
+}
+
+.status-dot-badge.green {
+  background: #15803d;
+}
+
+.status-dot-badge.yellow {
+  background: #d97706;
+}
+
+.status-dot-badge.red {
+  background: #dc2626;
 }
 
 .status-grid {
@@ -1381,6 +1556,7 @@ tr:last-child td {
   .sidebar {
     position: static;
     height: auto;
+    gap: 10px;
   }
 
   .nav-list {
@@ -1388,6 +1564,9 @@ tr:last-child td {
   }
 
   .nav-item {
+    min-height: 34px;
+    padding: 0 8px;
+    font-size: 12px;
     text-align: center;
   }
 
@@ -1425,6 +1604,10 @@ tr:last-child td {
     grid-template-columns: 1fr 1fr;
   }
 
+  .contract-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .resource-row-title {
     justify-content: start;
     place-items: center start;
@@ -1439,7 +1622,24 @@ tr:last-child td {
 
 @media (max-width: 700px) {
   .workspace {
-    padding: 16px;
+    padding: 12px;
+  }
+
+  .sidebar {
+    padding: 14px 12px;
+  }
+
+  .brand-block {
+    gap: 10px;
+  }
+
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+  }
+
+  .sidebar-project {
+    padding: 9px;
   }
 
   .topbar {
@@ -1465,6 +1665,7 @@ tr:last-child td {
   .status-grid,
   .form-grid,
   .resource-row,
+  .contract-toolbar,
   .summary-extra-form,
   .settings-columns,
   .quick-add,
@@ -1472,6 +1673,16 @@ tr:last-child td {
   #processAddForm,
   #subProcessAddForm {
     grid-template-columns: 1fr;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .nav-item {
+    min-height: 32px;
+    padding: 0 5px;
+    font-size: 11px;
   }
 
   .dashboard-tabs {

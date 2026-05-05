@@ -13,8 +13,13 @@
         <div class="brand-mark">J2</div>
         <div>
           <p class="eyebrow">화림 업무전산시스템</p>
-          <h1>제천2덕동골</h1>
+          <h1 id="brandProjectTitle">현장 프로젝트</h1>
         </div>
+      </div>
+
+      <div class="sidebar-project">
+        <label for="projectSelect">현장프로젝트</label>
+        <select id="projectSelect" aria-label="프로젝트 선택"></select>
       </div>
 
       <nav class="nav-list" aria-label="화면 이동">
@@ -37,9 +42,6 @@
         <div>
           <p class="eyebrow" id="todayLabel">오늘</p>
           <h2 id="viewTitle">업무등록</h2>
-        </div>
-        <div class="topbar-actions">
-          <select id="projectSelect" aria-label="프로젝트 선택"></select>
         </div>
       </header>
 
@@ -145,7 +147,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-logs" aria-labelledby="viewTitle">
+      <section class="view compact-view" id="view-logs" aria-labelledby="viewTitle">
         <div class="work-panel">
           <div class="section-heading">
             <div>
@@ -167,6 +169,15 @@
               <button class="secondary-btn" id="logInlineCancelButton" type="button">취소</button>
             </div>
           </div>
+          <div class="contract-toolbar hidden" id="contractToolbar">
+            <div>
+              <strong>도급 정리</strong>
+              <span id="contractSelectionSummary">선택 0건</span>
+            </div>
+            <input id="contractTotalAmount" type="number" min="0" step="1" placeholder="총 도급금액 예: 210">
+            <button class="primary-btn" id="applyContractButton" type="button">도급금액 분배</button>
+            <button class="secondary-btn" id="clearContractSelection" type="button">선택 해제</button>
+          </div>
           <div class="table-wrap">
             <table class="data-table">
               <thead>
@@ -182,6 +193,7 @@
                   <th>비용</th>
                   <th>결제여부</th>
                   <th>비고</th>
+                  <th>도급</th>
                   <th>상태</th>
                   <th>관리</th>
                 </tr>
@@ -197,6 +209,7 @@
                   <th></th>
                   <th><select id="logPaymentFilter" aria-label="결제여부 컬럼 필터"></select></th>
                   <th><input id="logMemoFilter" type="search" placeholder="검색"></th>
+                  <th></th>
                   <th></th>
                   <th></th>
                 </tr>
@@ -289,7 +302,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-materials" aria-labelledby="viewTitle">
+      <section class="view compact-view" id="view-materials" aria-labelledby="viewTitle">
         <div class="work-panel">
           <div class="section-heading">
             <div>
@@ -350,7 +363,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-summary" aria-labelledby="viewTitle">
+      <section class="view compact-view" id="view-summary" aria-labelledby="viewTitle">
         <div class="summary-stack">
           <section class="work-panel">
             <div class="section-heading">
@@ -399,7 +412,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-settings" aria-labelledby="viewTitle">
+      <section class="view compact-view" id="view-settings" aria-labelledby="viewTitle">
         <div class="settings-stack">
           <section class="work-panel">
             <div class="section-heading">
