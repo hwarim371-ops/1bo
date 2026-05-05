@@ -1,10 +1,10 @@
 window.APP_CONFIG = {
   projects: [
     { name: "제천2조은삼", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbw59JtQGu6k1bvrN76oXZWMQOKlqn432hNwlrght-ZGqH23gaRq2IQUGH1y5L-BPs-IKQ/exec", spreadsheetId: "" },
+"https://script.google.com/macros/s/AKfycby2IruU1bJXmeQiRwbyMLYIS9Tq8hnmLz5EuB-Sr5aEWhw7UVdZS6NGS_PlQc2Pt5pp_Q/exec", spreadsheetId: "" },
     { name: "천안", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbw7xZoiG9kIw8Ohn2PYHogz8cRd5-h6l7s0Y8EVG-tv5ISOWUbpTSL3cMZpjgcb0dK4zQ/exec", spreadsheetId: "" },
+"https://script.google.com/macros/s/AKfycby9TLEYv-shatBglKv39I-LWK85iHI_0DvOk2JNKJKfGrWFupeYtGV9YETJJHBAE8TNQg/exec", spreadsheetId: "" },
     { name: "화순", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbyJ0AE_GDJbJT1krNicd99N626ruHoSqlePcGUub6aKSlnejp75ptx-OdDIijtVnfCV/exec", spreadsheetId: "" }
+"https://script.google.com/macros/s/AKfycbyYuSMkaI-aZ_okNUaFc4qaPXzzvryBrPYHbCEdQ6nvad_YrLUArMflu3QCqlTbzhYZ/exec", spreadsheetId: "" }
   ]
 };
