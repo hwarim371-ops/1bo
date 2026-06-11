@@ -1,10 +1,9 @@
 window.APP_CONFIG = {
+  // 비밀번호는 이 파일에 넣지 않습니다. 각 프로젝트 Apps Script의
+  // setupProjectPassword 함수로 Script Properties에 설정합니다.
   projects: [
-    { name: "제천2조은삼", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbw_TsL0CvmZzn4lvsxopR-J66X-YTzUcIt0caBdoNwEeqrQ_Q3D_3ufuU9psbO7NTHgHQ/exec", spreadsheetId: "" },
-    { name: "천안", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbzlI3Cj7aRXV-J2fIsoVatMIVz-9ZSbHk0CsFiKcvvAJVELHODxdA6KIcFRRnc5yJJ1Jw/exec", spreadsheetId: "" },
-    { name: "화순", syncEndpoint: 
-"https://script.google.com/macros/s/AKfycbzQftIYJWICckfob8zBbOTDX5eHjfc5pPfPs9ejNUlOgQBzpZO5BoZCa1B749TFWWvc/exec", spreadsheetId: "" }
+    { name: "제천2조은삼", syncEndpoint: "https://script.google.com/macros/s/AKfycbwd0Xg0n3VzRbUpUQiAsVax_gxEBp6k28yUO-ym6pJctC6Ttqqg3AhPDWy_xQqS4YyyrQ/exec", spreadsheetId: "" },
+    { name: "천안1", syncEndpoint: "https://script.google.com/macros/s/AKfycbz3TIoUNcffTgyoHjG26Qi5J5PJpVxOjXQY2YDtVHRat5fsDKg5YY_v0CODJ9AqD6n08w/exec", spreadsheetId: "" },
+    { name: "화순", syncEndpoint: "https://script.google.com/macros/s/AKfycbyjs2WgW8FCNI-PALVf7VEls_jWVhuV-3anlRPz-A6C0HwZqVf3s1aBynsf9E7uJbtn/exec", spreadsheetId: "" }
   ]
 };
