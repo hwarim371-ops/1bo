@@ -65,8 +65,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   initializeDefaults();
   renderAll();
+  registerServiceWorker();
   await showProjectAccessGate(getActiveProjectName());
 });
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {
+      // 설치 기능이 지원되지 않아도 웹 업무일지는 정상적으로 동작합니다.
+    });
+  });
+}
 
 function cacheElements() {
   Object.assign(elements, {
@@ -135,6 +145,7 @@ function cacheElements() {
     cancelContractButton: document.querySelector("#cancelContractButton"),
     clearContractSelection: document.querySelector("#clearContractSelection"),
     clearLogFilters: document.querySelector("#clearLogFilters"),
+    logTableSummary: document.querySelector("#logTableSummary"),
     logTableBody: document.querySelector("#logTableBody"),
     materialForm: document.querySelector("#materialForm"),
     materialDate: document.querySelector("#materialDate"),
@@ -165,6 +176,7 @@ function cacheElements() {
     materialEditBar: document.querySelector("#materialEditBar"),
     materialInlineSaveButton: document.querySelector("#materialInlineSaveButton"),
     materialInlineCancelButton: document.querySelector("#materialInlineCancelButton"),
+    materialTableSummary: document.querySelector("#materialTableSummary"),
     materialTableBody: document.querySelector("#materialTableBody"),
     summaryStart: document.querySelector("#summaryStart"),
     summaryEnd: document.querySelector("#summaryEnd"),
@@ -508,7 +520,7 @@ function initializeDefaults() {
   elements.todayLabel.textContent = `오늘 ${formatDate(isoToday)}`;
   elements.entryDate.value = elements.entryDate.value || isoToday;
   elements.materialDate.value = elements.materialDate.value || isoToday;
-  elements.summaryStart.value = elements.summaryStart.value || sourceData.dashboard?.constructionStartDate || shiftDate(today, -30);
+  elements.summaryStart.value = elements.summaryStart.value || sourceData.dashboard?.constructionStartDate || "";
   elements.summaryEnd.value = elements.summaryEnd.value || isoToday;
   renderProjectOptions();
   elements.syncEndpoint.value = getSyncEndpoint();
@@ -904,7 +916,7 @@ function renderDrafts() {
 function renderMetrics() {
   if (["input", "logs"].includes(state.activeView)) {
   const todayEntries = todayWorkEntries();
-    const labor = sum(todayEntries.filter((entry) => entry.labor).map((entry) => Number(entry.workAmount || 0)));
+    const labor = sum(todayEntries.filter((entry) => entry.labor).map((entry) => amountOf(entry.workAmount)));
     const equipment = todayEntries.filter((entry) => entry.equipment).length;
     const pending = state.entries.filter((entry) => ["local", "failed"].includes(entry.status)).length + state.draft.length;
     setMetrics("오늘 업무", `${todayEntries.length}건`, "투입 공수", labor.toFixed(1), "투입 장비", `${equipment}대`, "확인 필요", `${pending}건`);
@@ -914,9 +926,9 @@ function renderMetrics() {
   if (["materialInput", "materials"].includes(state.activeView)) {
     const todayMaterials = state.materialOrders.filter((order) => order.date === isoToday);
   const projectMaterials = projectMaterialOrders();
-  const materialCost = sum(projectMaterials.map((order) => Number(order.orderAmount || 0)));
-  const credit = sum(projectMaterials.map((order) => Number(order.creditAmount || 0)));
-  const comparisonProfit = sum(projectMaterials.map((order) => Math.max(0, Number(order.highPrice || 0) - Number(order.orderAmount || 0))));
+  const materialCost = sum(projectMaterials.map((order) => amountOf(order.orderAmount)));
+  const credit = sum(projectMaterials.map(materialCreditAmount));
+  const comparisonProfit = sum(projectMaterials.map(materialComparisonProfit));
     setMetrics("오늘 자재", `${todayMaterials.length}건`, "발주 금액", formatMoney(materialCost), "외상금액", formatMoney(credit), "비교 이익", formatMoney(comparisonProfit));
     return;
   }
@@ -940,6 +952,17 @@ function setMetrics(labelA, valueA, labelB, valueB, labelC, valueC, labelD, valu
   elements.metricEquipment.textContent = valueC;
   elements.metricLabelD.textContent = labelD;
   elements.metricWarnings.textContent = valueD;
+}
+
+function renderTableSummaryCards(container, items) {
+  if (!container) return;
+  container.innerHTML = "";
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = `table-summary-card ${item.strong ? "strong" : ""}`;
+    card.innerHTML = `<span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong>`;
+    container.append(card);
+  });
 }
 
 function renderLogs() {
@@ -974,6 +997,7 @@ function renderLogs() {
     return dateMatch && quickDateMatch && processMatch && mainMatch && subMatch && detailMatch && equipmentMatch && laborMatch && paymentMatch && memoMatch;
   }).sort(compareDateAsc);
 
+  renderWorkTableSummary(rows);
   elements.logTableBody.innerHTML = "";
 
   if (rows.length === 0) {
@@ -1014,6 +1038,7 @@ function renderLogs() {
     `;
     elements.logTableBody.append(tr);
   });
+  appendWorkTotalRow(rows);
 
   elements.logTableBody.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => beginEntryEdit(button.dataset.edit));
@@ -1033,6 +1058,46 @@ function renderLogs() {
   elements.logTableBody.querySelectorAll("[data-contract-select]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => toggleContractSelection(checkbox.dataset.contractSelect, checkbox.checked));
   });
+}
+
+function renderWorkTableSummary(rows) {
+  const totals = workTableTotals(rows);
+  renderTableSummaryCards(elements.logTableSummary, [
+    { label: "표시 행", value: `${rows.length}건` },
+    { label: "총 투입공수", value: formatWorkAmountNumber(totals.workAmount) },
+    { label: "인건비 합계", value: formatMoney(totals.laborCost) },
+    { label: "장비대 합계", value: formatMoney(totals.equipmentCost) },
+    { label: "업무 총비용", value: formatMoney(totals.totalCost), strong: true },
+    { label: "결제 미입력", value: `${totals.pendingCount}건` }
+  ]);
+}
+
+function appendWorkTotalRow(rows) {
+  if (!rows.length) return;
+  const totals = workTableTotals(rows);
+  const row = document.createElement("tr");
+  row.className = "table-total-row";
+  row.innerHTML = `
+    <td colspan="6">필터 합계</td>
+    <td>${formatWorkAmountNumber(totals.workAmount)}</td>
+    <td>총비용</td>
+    <td>${formatMoney(totals.totalCost)}</td>
+    <td colspan="2">인건비 ${formatMoney(totals.laborCost)} · 장비대 ${formatMoney(totals.equipmentCost)}</td>
+    <td colspan="3">결제 미입력 ${totals.pendingCount}건</td>
+  `;
+  elements.logTableBody.append(row);
+}
+
+function workTableTotals(rows) {
+  const laborCost = sum(rows.filter((entry) => entry.costType === "인건비").map((entry) => amountOf(entry.cost)));
+  const equipmentCost = sum(rows.filter((entry) => entry.costType === "장비대").map((entry) => amountOf(entry.cost)));
+  return {
+    workAmount: sum(rows.map((entry) => amountOf(entry.workAmount))),
+    laborCost,
+    equipmentCost,
+    totalCost: laborCost + equipmentCost,
+    pendingCount: rows.filter((entry) => !entry.paymentStatus).length
+  };
 }
 
 function renderLogColumnFilters(rows) {
@@ -1506,16 +1571,16 @@ function renderMaterialCards() {
 
   recent.forEach((material) => {
     const row = document.createElement("article");
-    row.className = `material-row ${Number(material.creditAmount || 0) > 0 ? "low" : ""}`;
+    row.className = `material-row ${materialCreditAmount(material) > 0 ? "low" : ""}`;
     row.innerHTML = `
       <header>
         <strong>${escapeHtml(material.product || "제품명 없음")}</strong>
-        <span class="pill ${Number(material.creditAmount || 0) > 0 ? "" : "muted"}">${formatMoney(material.orderAmount)}</span>
+        <span class="pill ${materialCreditAmount(material) > 0 ? "" : "muted"}">${formatMoney(material.orderAmount)}</span>
       </header>
       <p>${formatDate(material.date)} · ${escapeHtml(material.process || "")} · ${escapeHtml(material.vendor || "")}</p>
       <div class="material-meta">
-        <span>비교 ${formatMoney(Number(material.highPrice || 0) - Number(material.orderAmount || 0))}</span>
-        <span>외상 ${formatMoney(material.creditAmount)}</span>
+        <span>비교 ${formatMoney(materialComparisonProfit(material))}</span>
+        <span>외상 ${formatMoney(materialCreditAmount(material))}</span>
       </div>
     `;
     elements.materialList.append(row);
@@ -1548,6 +1613,7 @@ function renderMaterialTable() {
     return dateMatch && quickDateMatch && processMatch && quickProcessMatch && productMatch && vendorMatch && areaMatch && memoMatch && (!search || searchText.includes(search));
   }).sort(compareDateAsc);
 
+  renderMaterialTableSummary(rows);
   elements.materialTableBody.innerHTML = "";
   if (rows.length === 0) {
     const row = document.createElement("tr");
@@ -1585,6 +1651,7 @@ function renderMaterialTable() {
     `;
     elements.materialTableBody.append(tr);
   });
+  appendMaterialTotalRow(rows);
 
   elements.materialTableBody.querySelectorAll("[data-edit-material]").forEach((button) => {
     button.addEventListener("click", () => beginMaterialEdit(button.dataset.editMaterial));
@@ -1598,6 +1665,48 @@ function renderMaterialTable() {
   elements.materialTableBody.querySelectorAll("[data-delete-material]").forEach((button) => {
     button.addEventListener("click", () => deleteMaterialOrder(button.dataset.deleteMaterial));
   });
+}
+
+function renderMaterialTableSummary(rows) {
+  const totals = materialTableTotals(rows);
+  renderTableSummaryCards(elements.materialTableSummary, [
+    { label: "표시 행", value: `${rows.length}건` },
+    { label: "발주 합계", value: formatMoney(totals.orderAmount), strong: true },
+    { label: "현지출", value: formatMoney(totals.paidAmount) },
+    { label: "외상 합계", value: formatMoney(totals.creditAmount) },
+    { label: "최고가 기준", value: formatMoney(totals.highPrice) },
+    { label: "비교 이익", value: formatMoney(totals.comparisonProfit) }
+  ]);
+}
+
+function appendMaterialTotalRow(rows) {
+  if (!rows.length) return;
+  const totals = materialTableTotals(rows);
+  const row = document.createElement("tr");
+  row.className = "table-total-row";
+  row.innerHTML = `
+    <td colspan="5">필터 합계</td>
+    <td>${formatMoney(totals.orderAmount)}</td>
+    <td>${formatMoney(totals.lowPrice)}</td>
+    <td>${formatMoney(totals.highPrice)}</td>
+    <td>비교 이익 ${formatMoney(totals.comparisonProfit)}</td>
+    <td>${formatMoney(totals.creditAmount)}</td>
+    <td colspan="2">현지출 ${formatMoney(totals.paidAmount)}</td>
+  `;
+  elements.materialTableBody.append(row);
+}
+
+function materialTableTotals(rows) {
+  const orderAmount = sum(rows.map((order) => amountOf(order.orderAmount)));
+  const creditAmount = sum(rows.map(materialCreditAmount));
+  return {
+    orderAmount,
+    lowPrice: sum(rows.map((order) => amountOf(order.lowPrice))),
+    highPrice: sum(rows.map((order) => amountOf(order.highPrice))),
+    creditAmount,
+    paidAmount: Math.max(0, orderAmount - creditAmount),
+    comparisonProfit: sum(rows.map(materialComparisonProfit))
+  };
 }
 
 function renderMaterialColumnFilters(rows) {
@@ -1632,9 +1741,7 @@ function renderSummary() {
   const workRows = filteredWorkRows();
   const materialRows = filteredMaterialRows();
   const totals = calculateTotals(workRows, materialRows);
-  const startDate = getProjectStartDate(workRows, materialRows);
-  const workDays = countUnique(workRows.map((row) => row.date));
-  const elapsedDays = startDate ? daysBetween(startDate, isoToday) + 1 : 0;
+  const operationStats = calculateOperationStats();
 
   const moneyStats = [
     { label: "총공사비", value: formatMoney(totals.totalCost), tone: "total" },
@@ -1648,9 +1755,9 @@ function renderSummary() {
     { label: "자재비교이익", value: formatMoney(totals.comparisonProfit), tone: "profit" }
   ];
   const metaStats = [
-    { label: "공사 시작일", value: formatDate(startDate) },
-    { label: "작업일", value: `${workDays}일` },
-    { label: "경과일", value: `${elapsedDays}일` },
+    { label: "공사 시작일", value: formatDate(operationStats.startDate) },
+    { label: "작업일", value: `${operationStats.workDays}일` },
+    { label: "경과일", value: `${operationStats.elapsedDays}일` },
     { label: "업무 기록", value: `${workRows.length}건` },
     { label: "자재 기록", value: `${materialRows.length}건` }
   ];
@@ -1746,7 +1853,7 @@ function renderSummaryChart(workRows, materialRows, totals) {
         { name: "인건비", value: totals.laborCost },
         { name: "자재비", value: totals.materialCost },
         { name: "장비대", value: totals.equipmentCost },
-        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: Number(item.amount || 0) }))
+        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) }))
       ]
     },
     category: {
@@ -1757,7 +1864,7 @@ function renderSummaryChart(workRows, materialRows, totals) {
         { name: "인건비", value: totals.laborCost },
         { name: "자재비", value: totals.materialCost },
         { name: "장비대", value: totals.equipmentCost },
-        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: Number(item.amount || 0) })),
+        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) })),
         { name: "외상", value: totals.credit }
       ]
     },
@@ -1820,14 +1927,14 @@ function renderDrillButtons(container, values, selected, onSelect) {
 function buildCategoryBreakdownRows(category, workRows, materialRows) {
   if (category.startsWith("extra:")) {
     const item = projectExtraSummaryItems().find((entry) => `extra:${entry.id}` === category);
-    return item ? [{ name: item.name, value: Number(item.amount || 0) }] : [];
+    return item ? [{ name: item.name, value: amountOf(item.amount) }] : [];
   }
 
   if (category === "credit") {
     const rows = groupSum(
       materialRows,
       (row) => row.process || "공정 미입력",
-      (row) => Math.min(amountOf(row.orderAmount), amountOf(row.creditAmount))
+      materialCreditAmount
     );
     const extras = projectExtraSummaryItems()
       .filter((item) => item.type === "credit")
@@ -1848,8 +1955,8 @@ function buildCategoryBreakdownRows(category, workRows, materialRows) {
 
 function renderPieChart(container, rows) {
   const colors = chartColors();
-  const meaningful = rows.filter((row) => Number(row.value || 0) > 0);
-  const total = sum(meaningful.map((row) => Number(row.value || 0)));
+  const meaningful = rows.filter((row) => amountOf(row.value) > 0);
+  const total = sum(meaningful.map((row) => amountOf(row.value)));
 
   if (!total) {
     container.append(emptyState());
@@ -1888,7 +1995,7 @@ function renderPieChart(container, rows) {
     </div>
     <div class="chart-legend">
       ${meaningful.map((row, index) => {
-        const percent = Math.round((Number(row.value || 0) / total) * 100);
+        const percent = Math.round((amountOf(row.value) / total) * 100);
         return `
         <div class="legend-row">
           <span style="background:${colors[index % colors.length]}"></span>
@@ -1909,7 +2016,7 @@ function buildPieSegments(rows, total, colors) {
   const inner = 68;
   let angle = -90;
   return rows.map((row, index) => {
-    const value = Number(row.value || 0);
+    const value = amountOf(row.value);
     const sweep = Math.max(0.8, (value / total) * 360);
     const end = angle + sweep;
     const large = sweep > 180 ? 1 : 0;
@@ -1964,9 +2071,9 @@ function chartColors() {
 }
 
 function renderBarChart(container, rows) {
-  const meaningful = rows.filter((row) => Number(row.value || 0) > 0);
-  const max = Math.max(...meaningful.map((row) => Number(row.value || 0)), 1);
-  const total = sum(meaningful.map((row) => Number(row.value || 0)));
+  const meaningful = rows.filter((row) => amountOf(row.value) > 0);
+  const max = Math.max(...meaningful.map((row) => amountOf(row.value)), 1);
+  const total = sum(meaningful.map((row) => amountOf(row.value)));
 
   if (meaningful.length === 0) {
     container.append(emptyState());
@@ -1976,13 +2083,13 @@ function renderBarChart(container, rows) {
   const list = document.createElement("div");
   list.className = "chart-list";
   meaningful.forEach((row) => {
-    const percentOfTotal = total ? Math.round((Number(row.value || 0) / total) * 100) : 0;
+    const percentOfTotal = total ? Math.round((amountOf(row.value) / total) * 100) : 0;
     const item = document.createElement("div");
     item.className = "bar-row chart-bar-row";
     item.innerHTML = `
       <span class="bar-label">${escapeHtml(row.name)}</span>
       <div>
-        <div class="bar-track"><div class="bar-fill" style="width: ${(Number(row.value || 0) / max) * 100}%"></div></div>
+        <div class="bar-track"><div class="bar-fill" style="width: ${(amountOf(row.value) / max) * 100}%"></div></div>
         ${row.meta ? `<small>${escapeHtml(row.meta)}</small>` : ""}
       </div>
       <strong>${formatMoney(row.value)} <span>${percentOfTotal}%</span></strong>
@@ -2029,7 +2136,7 @@ function buildPaymentRows(workRows, materialRows) {
     (row) => amountOf(row.cost)
   );
   const materialTotal = sum(materialRows.map((row) => amountOf(row.orderAmount)));
-  const materialCredit = sum(materialRows.map((row) => Math.min(amountOf(row.orderAmount), amountOf(row.creditAmount))));
+  const materialCredit = sum(materialRows.map(materialCreditAmount));
   const extras = projectExtraSummaryItems().map((item) => ({
     name: `${item.name} (${item.type === "credit" ? "외상" : "현지출"})`,
     value: amountOf(item.amount)
@@ -2048,7 +2155,7 @@ function renderRankList(container, rows, suffix) {
     container.append(emptyState());
     return;
   }
-  const max = Math.max(...rows.map((row) => Number(row.value || 0)), 1);
+  const max = Math.max(...rows.map((row) => amountOf(row.value)), 1);
   rows.forEach((row, index) => {
     const item = document.createElement("div");
     item.className = "rank-item";
@@ -2056,7 +2163,7 @@ function renderRankList(container, rows, suffix) {
       <span>${index + 1}</span>
       <div>
         <strong>${escapeHtml(row.name)}</strong>
-        <div class="rank-meter"><i style="width:${(Number(row.value || 0) / max) * 100}%"></i></div>
+        <div class="rank-meter"><i style="width:${(amountOf(row.value) / max) * 100}%"></i></div>
       </div>
       <em>${formatMoney(row.value)} ${suffix}</em>
     `;
@@ -2433,9 +2540,7 @@ function buildSummarySnapshotRows() {
   const workRows = filteredWorkRows();
   const materialRows = filteredMaterialRows();
   const totals = calculateTotals(workRows, materialRows);
-  const startDate = getProjectStartDate(workRows, materialRows);
-  const workDays = countUnique(workRows.map((row) => row.date));
-  const elapsedDays = startDate ? daysBetween(startDate, isoToday) + 1 : 0;
+  const operationStats = calculateOperationStats();
 
   return [
     { group: "총괄", name: "총공사비", value: totals.totalCost, type: "금액" },
@@ -2444,12 +2549,12 @@ function buildSummarySnapshotRows() {
     ...projectExtraSummaryItems().map((item) => ({
       group: "추가항목",
       name: item.name,
-      value: Number(item.amount || 0),
+      value: amountOf(item.amount),
       type: item.type === "credit" ? "외상" : "현지출액"
     })),
-    { group: "일정", name: "공사 시작일", value: startDate || "", type: "날짜" },
-    { group: "일정", name: "작업일", value: `${workDays}일`, type: "일수" },
-    { group: "일정", name: "경과일", value: `${elapsedDays}일`, type: "일수" },
+    { group: "일정", name: "공사 시작일", value: operationStats.startDate || "", type: "날짜" },
+    { group: "일정", name: "작업일", value: `${operationStats.workDays}일`, type: "일수" },
+    { group: "일정", name: "경과일", value: `${operationStats.elapsedDays}일`, type: "일수" },
     { group: "비용분석", name: "인건비", value: totals.laborCost, type: "금액" },
     { group: "비용분석", name: "자재비", value: totals.materialCost, type: "금액" },
     { group: "비용분석", name: "장비대", value: totals.equipmentCost, type: "금액" },
@@ -2566,7 +2671,7 @@ function loadSheetBackupJsonp(accessKey = getAccessKey()) {
 }
 
 function estimateCost(entry) {
-  const amount = Number(entry.workAmount || 1);
+  const amount = amountOf(entry.workAmount) || 1;
   if (entry.labor) {
     const match = String(entry.labor).match(/(\d+)/);
     return match ? Number(match[1]) * 10000 * amount : "";
@@ -2638,7 +2743,7 @@ function filteredWorkRows() {
 function filteredMaterialRows() {
   const start = elements.summaryStart.value || "0000-01-01";
   const end = elements.summaryEnd.value || "9999-12-31";
-  return projectMaterialOrders().filter((entry) => entry.date && entry.date >= start && entry.date <= end);
+  return projectMaterialOrders().filter((entry) => !entry.date || (entry.date >= start && entry.date <= end));
 }
 
 function todayWorkEntries() {
@@ -2838,8 +2943,8 @@ function calculateTotals(workRows, materialRows) {
   const equipmentCost = sum(workRows.filter((entry) => entry.costType === "장비대").map((entry) => amountOf(entry.cost)));
   const materialCost = sum(materialRows.map((entry) => amountOf(entry.orderAmount)));
   const extraCredit = sum(projectExtraSummaryItems().filter((entry) => entry.type === "credit").map((entry) => amountOf(entry.amount)));
-  const credit = sum(materialRows.map((entry) => Math.min(amountOf(entry.orderAmount), amountOf(entry.creditAmount)))) + extraCredit;
-  const comparisonProfit = sum(materialRows.map((entry) => Math.max(0, amountOf(entry.highPrice) - amountOf(entry.orderAmount))));
+  const credit = sum(materialRows.map(materialCreditAmount)) + extraCredit;
+  const comparisonProfit = sum(materialRows.map(materialComparisonProfit));
   const extraCost = sum(projectExtraSummaryItems().map((entry) => amountOf(entry.amount)));
   return {
     laborCost,
@@ -2849,6 +2954,34 @@ function calculateTotals(workRows, materialRows) {
     credit,
     comparisonProfit,
     totalCost: laborCost + equipmentCost + materialCost + extraCost
+  };
+}
+
+function materialCreditAmount(entry) {
+  const orderAmount = amountOf(entry.orderAmount);
+  const creditAmount = amountOf(entry.creditAmount);
+  if (!creditAmount) return 0;
+  return orderAmount > 0 ? Math.min(orderAmount, creditAmount) : creditAmount;
+}
+
+function materialComparisonProfit(entry) {
+  const orderAmount = amountOf(entry.orderAmount);
+  const highPrice = amountOf(entry.highPrice);
+  return Math.max(0, highPrice - orderAmount);
+}
+
+function calculateOperationStats() {
+  const startDate = getProjectStartDate();
+  const endDate = isoToday;
+  const workDays = startDate
+    ? countUnique(projectEntries()
+      .filter((row) => row.date && row.date >= startDate && row.date <= endDate)
+      .map((row) => row.date))
+    : 0;
+  return {
+    startDate,
+    workDays,
+    elapsedDays: elapsedDaysInclusive(startDate, endDate)
   };
 }
 
@@ -2876,13 +3009,19 @@ function countUnique(values) {
   return new Set(values.filter(Boolean)).size;
 }
 
-function getProjectStartDate(workRows, materialRows) {
+function getProjectStartDate() {
+  if (elements.summaryStart.value) return elements.summaryStart.value;
   const dates = [
     state.dashboard.constructionStartDate,
-    ...workRows.map((row) => row.date),
-    ...materialRows.map((row) => row.date)
+    ...projectEntries().map((row) => row.date),
+    ...projectMaterialOrders().map((row) => row.date)
   ].filter(Boolean).sort();
   return dates[0] || "";
+}
+
+function elapsedDaysInclusive(start, end) {
+  if (!start || !end || start > end) return 0;
+  return daysBetween(start, end) + 1;
 }
 
 function daysBetween(start, end) {
@@ -3058,6 +3197,11 @@ function formatWorkAmount(value) {
   if (String(value) === "1") return "일공수";
   if (String(value) === "0.5") return "반공수";
   return value || "";
+}
+
+function formatWorkAmountNumber(value) {
+  const number = amountOf(value);
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
 }
 
 function numberOrBlank(value) {
