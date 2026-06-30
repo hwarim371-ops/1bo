@@ -161,8 +161,8 @@
               <div class="section-label">3. 공통 비고</div>
               <div class="form-grid">
                 <label class="wide">
-                  <span>비고</span>
-                  <input id="entryMemo" type="text" placeholder="특이사항, 위치, 사진 링크 등">
+                  <span>인력이름, 금액, 메모</span>
+                  <input id="entryMemo" type="text" placeholder="예: 홍길동, 180000, 오전 작업">
                 </label>
               </div>
             </div>
@@ -196,6 +196,7 @@
               <input id="logEndDateFilter" type="date" aria-label="종료일 필터">
               <select id="logProcessFilter" aria-label="공정 필터"></select>
               <button class="secondary-btn" id="clearLogFilters" type="button">초기화</button>
+              <button class="secondary-btn" id="toggleLogSheetEditButton" type="button">표 수정모드</button>
             </div>
           </div>
           <div class="inline-edit-bar hidden" id="logEditBar">
@@ -206,35 +207,37 @@
               <button class="secondary-btn" id="logInlineCancelButton" type="button">취소</button>
             </div>
           </div>
-          <div class="contract-toolbar hidden" id="contractToolbar">
-            <div>
-              <strong>도급 정리</strong>
-              <span id="contractSelectionSummary">선택 0건</span>
+          <div class="log-toolbar-grid">
+            <div class="contract-toolbar hidden" id="contractToolbar">
+              <div>
+                <strong>도급 정리</strong>
+                <span id="contractSelectionSummary">선택 0건</span>
+              </div>
+              <input id="contractTotalAmount" type="number" min="0" step="1" placeholder="총 도급금액 예: 210">
+              <button class="primary-btn" id="applyContractButton" type="button">도급금액 분배</button>
+              <button class="secondary-btn danger-lite" id="cancelContractButton" type="button">도급 취소</button>
+              <button class="secondary-btn" id="clearContractSelection" type="button">선택 해제</button>
             </div>
-            <input id="contractTotalAmount" type="number" min="0" step="1" placeholder="총 도급금액 예: 210">
-            <button class="primary-btn" id="applyContractButton" type="button">도급금액 분배</button>
-            <button class="secondary-btn danger-lite" id="cancelContractButton" type="button">도급 취소</button>
-            <button class="secondary-btn" id="clearContractSelection" type="button">선택 해제</button>
-          </div>
-          <div class="bulk-edit-bar" id="logBulkEditBar">
-            <div>
-              <strong>표시된 업무 일괄수정</strong>
-              <span>현재 필터로 보이는 업무현황 행 전체를 같은 값으로 바꿉니다.</span>
-            </div>
-            <select id="logBulkField" aria-label="업무현황 일괄수정 항목">
-              <option value="detailProcess">세부공정</option>
-              <option value="equipment">장비</option>
-              <option value="labor">인부</option>
-              <option value="workAmount">투입공수</option>
-              <option value="costType">비용 구분</option>
-              <option value="cost">비용</option>
-              <option value="paymentStatus">결제여부</option>
-              <option value="memo">비고</option>
+            <div class="bulk-edit-bar" id="logBulkEditBar">
+              <div>
+                <strong>표시된 업무 일괄수정</strong>
+                <span>현재 필터로 보이는 업무현황 행 전체를 같은 값으로 바꿉니다.</span>
+              </div>
+              <select id="logBulkField" aria-label="업무현황 일괄수정 항목">
               <option value="mainProcess">주공정</option>
               <option value="subProcess">부공정</option>
-            </select>
-            <input id="logBulkValue" type="text" placeholder="새 값 입력">
-            <button class="secondary-btn" id="applyLogBulkEdit" type="button">일괄수정</button>
+                <option value="detailProcess">세부공정</option>
+                <option value="equipment">장비</option>
+                <option value="labor">인부</option>
+                <option value="workAmount">투입공수</option>
+                <option value="costType">비용 구분</option>
+                <option value="cost">비용</option>
+                <option value="paymentStatus">결제여부</option>
+                <option value="memo">비고</option>
+              </select>
+              <input id="logBulkValue" type="text" placeholder="새 값 입력">
+              <button class="secondary-btn" id="applyLogBulkEdit" type="button">일괄수정</button>
+            </div>
           </div>
           <div class="table-summary-grid" id="logTableSummary" aria-label="업무현황 합계"></div>
           <div class="table-wrap">
