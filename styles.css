@@ -795,6 +795,11 @@ label span {
   color: var(--red);
 }
 
+.icon-btn.split {
+  color: var(--brown);
+  background: #fff2d9;
+}
+
 .icon-btn:disabled {
   cursor: not-allowed;
   opacity: 0.42;
@@ -851,6 +856,33 @@ label span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.bulk-edit-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 11px 12px;
+  border: 1px solid rgba(122, 77, 36, 0.18);
+  border-radius: 8px;
+  background: #fffaf2;
+}
+
+.bulk-edit-bar div {
+  display: grid;
+  gap: 3px;
+}
+
+.bulk-edit-bar strong {
+  font-size: 14px;
+}
+
+.bulk-edit-bar span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .table-summary-grid {
@@ -1702,6 +1734,32 @@ tr:last-child td {
   font-weight: 900;
 }
 
+.editable-tag {
+  padding-right: 6px;
+}
+
+.tag-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-action {
+  height: 22px;
+  border: 1px solid rgba(122, 77, 36, 0.25);
+  border-radius: 999px;
+  padding: 0 7px;
+  color: var(--brown);
+  font-size: 11px;
+  font-weight: 900;
+  background: #fff6e9;
+}
+
+.tag-action.danger {
+  color: var(--red);
+}
+
 .process-settings-list {
   grid-template-columns: repeat(2, minmax(260px, 1fr));
 }
@@ -1806,6 +1864,10 @@ tr:last-child td {
     grid-template-columns: 1fr 1fr;
   }
 
+  .bulk-edit-bar {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .resource-row-title {
     justify-content: start;
     place-items: center start;
@@ -1864,6 +1926,7 @@ tr:last-child td {
   .form-grid,
   .resource-row,
   .contract-toolbar,
+  .bulk-edit-bar,
   .summary-extra-form,
   .settings-columns,
   .quick-add,

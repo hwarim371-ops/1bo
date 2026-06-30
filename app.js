@@ -58,6 +58,8 @@ let savingWork = false;
 let savingMaterial = false;
 let syncingAll = false;
 let selectedContractEntryIds = new Set();
+let currentLogRows = [];
+let currentMaterialRows = [];
 const projectAccessKeys = new Map();
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -145,6 +147,10 @@ function cacheElements() {
     cancelContractButton: document.querySelector("#cancelContractButton"),
     clearContractSelection: document.querySelector("#clearContractSelection"),
     clearLogFilters: document.querySelector("#clearLogFilters"),
+    logBulkEditBar: document.querySelector("#logBulkEditBar"),
+    logBulkField: document.querySelector("#logBulkField"),
+    logBulkValue: document.querySelector("#logBulkValue"),
+    applyLogBulkEdit: document.querySelector("#applyLogBulkEdit"),
     logTableSummary: document.querySelector("#logTableSummary"),
     logTableBody: document.querySelector("#logTableBody"),
     materialForm: document.querySelector("#materialForm"),
@@ -176,6 +182,10 @@ function cacheElements() {
     materialEditBar: document.querySelector("#materialEditBar"),
     materialInlineSaveButton: document.querySelector("#materialInlineSaveButton"),
     materialInlineCancelButton: document.querySelector("#materialInlineCancelButton"),
+    materialBulkEditBar: document.querySelector("#materialBulkEditBar"),
+    materialBulkField: document.querySelector("#materialBulkField"),
+    materialBulkValue: document.querySelector("#materialBulkValue"),
+    applyMaterialBulkEdit: document.querySelector("#applyMaterialBulkEdit"),
     materialTableSummary: document.querySelector("#materialTableSummary"),
     materialTableBody: document.querySelector("#materialTableBody"),
     summaryStart: document.querySelector("#summaryStart"),
@@ -288,6 +298,7 @@ function bindEvents() {
   elements.applyContractButton.addEventListener("click", applyContractDistribution);
   elements.cancelContractButton.addEventListener("click", cancelContractDistribution);
   elements.clearContractSelection.addEventListener("click", clearContractSelection);
+  elements.applyLogBulkEdit.addEventListener("click", applyLogBulkEdit);
   elements.logDateFilter.addEventListener("change", renderLogs);
   elements.logEndDateFilter.addEventListener("change", renderLogs);
   elements.logProcessFilter.addEventListener("change", renderLogs);
@@ -326,6 +337,7 @@ function bindEvents() {
   elements.cancelMaterialEditButton.addEventListener("click", cancelMaterialEdit);
   elements.materialInlineSaveButton.addEventListener("click", () => saveInlineMaterial(elements.materialTableBody.querySelector("[data-editing-material]")));
   elements.materialInlineCancelButton.addEventListener("click", cancelMaterialEdit);
+  elements.applyMaterialBulkEdit.addEventListener("click", applyMaterialBulkEdit);
   elements.materialStartDateFilter.addEventListener("change", renderMaterialTable);
   elements.materialEndDateFilter.addEventListener("change", renderMaterialTable);
   elements.materialProcessFilter.addEventListener("change", renderMaterialTable);
@@ -869,6 +881,35 @@ function updateEntrySyncStatus(savedEntries, status) {
   saveState();
 }
 
+function updateMaterialSyncStatus(savedOrders, status) {
+  const ids = new Set(savedOrders.map((order) => order.id));
+  state.materialOrders = state.materialOrders.map((order) => ids.has(order.id) ? { ...order, status } : order);
+  if (status === "sent") state.lastSync = new Date().toISOString();
+  saveState();
+}
+
+async function syncWorkRowsWithOverlay(rows, title) {
+  if (!getSyncEndpoint()) return true;
+  const sent = await runWithSyncOverlay(title, async () => {
+    const workSaved = await syncPayload("workEntries", rows);
+    return workSaved && await syncSharedBackup();
+  });
+  updateEntrySyncStatus(rows, sent ? "sent" : "failed");
+  renderAll();
+  return sent;
+}
+
+async function syncMaterialRowsWithOverlay(rows, title) {
+  if (!getSyncEndpoint()) return true;
+  const sent = await runWithSyncOverlay(title, async () => {
+    const materialSaved = await syncPayload("materialOrders", rows);
+    return materialSaved && await syncSharedBackup();
+  });
+  updateMaterialSyncStatus(rows, sent ? "sent" : "failed");
+  renderAll();
+  return sent;
+}
+
 function clearEntryDetailFields() {
   elements.detailProcess.value = "";
   elements.entryMemo.value = "";
@@ -997,6 +1038,7 @@ function renderLogs() {
     return dateMatch && quickDateMatch && processMatch && mainMatch && subMatch && detailMatch && equipmentMatch && laborMatch && paymentMatch && memoMatch;
   }).sort(compareDateAsc);
 
+  currentLogRows = rows;
   renderWorkTableSummary(rows);
   elements.logTableBody.innerHTML = "";
 
@@ -1031,6 +1073,7 @@ function renderLogs() {
       <td>${statusDotHtml(entry.status)}</td>
       <td>
         <div class="row-actions">
+          <button class="icon-btn split" type="button" title="장비대/인건비 분할" data-split-cost="${entry.id}" ${canManage && canSplitEquipmentEntry(entry) ? "" : "disabled"}>분</button>
           <button class="icon-btn approve" type="button" title="수정" data-edit="${entry.id}" ${canManage ? "" : "disabled"}>√</button>
           <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage ? "" : "disabled"}>X</button>
         </div>
@@ -1055,9 +1098,16 @@ function renderLogs() {
   elements.logTableBody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteEntry(button.dataset.delete));
   });
+  elements.logTableBody.querySelectorAll("[data-split-cost]").forEach((button) => {
+    button.addEventListener("click", () => splitEquipmentCost(button.dataset.splitCost));
+  });
   elements.logTableBody.querySelectorAll("[data-contract-select]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => toggleContractSelection(checkbox.dataset.contractSelect, checkbox.checked));
   });
+}
+
+function canSplitEquipmentEntry(entry) {
+  return !entry.contractFlag && amountOf(entry.cost) > 0 && Boolean(entry.equipment || entry.costType === "장비대");
 }
 
 function renderWorkTableSummary(rows) {
@@ -1127,7 +1177,8 @@ function renderContractToolbar() {
   elements.contractToolbar.classList.toggle("hidden", selected.length === 0);
   if (selected.length === 0) return;
   const dateCount = countUnique(selected.map((entry) => entry.date));
-  elements.contractSelectionSummary.textContent = `선택 ${selected.length}건 · ${dateCount}일`;
+  const selectedTotal = sum(selected.map((entry) => amountOf(entry.cost)));
+  elements.contractSelectionSummary.textContent = `선택 ${selected.length}건 · ${dateCount}일 · 선택 합계 ${formatMoney(selectedTotal)}`;
 }
 
 async function applyContractDistribution() {
@@ -1256,9 +1307,47 @@ function contractSelectedEntries() {
 }
 
 function normalizeContractAmount(value) {
-  const number = numberOrBlank(value);
+  const number = numberOrBlank(String(value ?? "").replaceAll(",", ""));
   if (!number) return 0;
   return number < 10000 ? number * 10000 : number;
+}
+
+function selectedOptionLabel(select) {
+  return select?.options?.[select.selectedIndex]?.textContent || select?.value || "항목";
+}
+
+function bulkDisplayValue(value) {
+  return value === "" ? "빈값" : String(value);
+}
+
+function readBulkValue(field, rawValue, numericFields = [], requiredFields = []) {
+  const value = String(rawValue ?? "").trim();
+  if (requiredFields.includes(field) && !value) {
+    window.alert(`${selectedBulkFieldName(field)} 값은 비워둘 수 없습니다.`);
+    return { ok: false };
+  }
+
+  if (numericFields.includes(field)) {
+    const number = numberOrBlank(value.replaceAll(",", ""));
+    if (number === "" || number < 0 || (field === "workAmount" && number <= 0)) {
+      window.alert("금액은 0 이상, 공수는 0보다 큰 숫자로 입력해주세요.");
+      return { ok: false };
+    }
+    return { ok: true, value: number };
+  }
+
+  return { ok: true, value };
+}
+
+function selectedBulkFieldName(field) {
+  const labels = {
+    mainProcess: "주공정",
+    subProcess: "부공정",
+    costType: "비용 구분",
+    process: "공정",
+    product: "제품"
+  };
+  return labels[field] || "선택 항목";
 }
 
 function statusDotHtml(status, label) {
@@ -1380,6 +1469,123 @@ async function saveInlineEntry(row) {
     if (sent) await syncSharedBackup();
     renderAll();
   }
+}
+
+async function splitEquipmentCost(id) {
+  const original = state.entries.find((entry) => entry.id === id);
+  if (!original) return;
+  if (!canSplitEquipmentEntry(original)) {
+    window.alert("도급 처리된 행이거나 장비대 금액이 없는 행은 분할할 수 없습니다.");
+    return;
+  }
+
+  const currentCost = amountOf(original.cost);
+  const rawLaborCost = window.prompt(
+    `인건비로 분리할 금액을 입력하세요.\n현재 장비대: ${formatMoney(currentCost)}\n예: 30 또는 300000`,
+    ""
+  );
+  if (rawLaborCost === null) return;
+
+  const laborCost = normalizeContractAmount(rawLaborCost);
+  if (!laborCost || laborCost >= currentCost) {
+    window.alert("인건비는 0원보다 크고 현재 장비대보다 작아야 합니다.");
+    return;
+  }
+
+  const defaultLabor = original.labor || state.config.labor[0] || "분할 인건비";
+  const rawLaborName = window.prompt("새로 만들 인건비 항목명을 입력하세요.", defaultLabor);
+  if (rawLaborName === null) return;
+  const laborName = rawLaborName.trim() || defaultLabor;
+  const equipmentCost = currentCost - laborCost;
+
+  const confirmed = window.confirm(`장비대 ${formatMoney(currentCost)}을\n장비대 ${formatMoney(equipmentCost)} / 인건비 ${formatMoney(laborCost)}로 나눌까요?`);
+  if (!confirmed) return;
+
+  const now = new Date().toISOString();
+  const status = getSyncEndpoint() ? "sending" : "local";
+  const equipmentEntry = {
+    ...original,
+    labor: "",
+    costType: "장비대",
+    cost: equipmentCost,
+    updatedAt: now,
+    status
+  };
+  const laborEntry = {
+    ...original,
+    id: cryptoId(),
+    equipment: "",
+    labor: laborName,
+    costType: "인건비",
+    cost: laborCost,
+    contractFlag: false,
+    contractTotal: "",
+    contractGroupId: "",
+    contractOriginalCost: "",
+    contractOriginalCostType: "",
+    createdAt: now,
+    updatedAt: now,
+    status
+  };
+
+  if (!state.config.labor.includes(laborName)) {
+    state.config.labor.push(laborName);
+  }
+
+  const changedEntries = [equipmentEntry, laborEntry];
+  state.entries = state.entries.flatMap((entry) => entry.id === id ? changedEntries : [entry]);
+  saveState();
+  renderAll();
+
+  const synced = await syncWorkRowsWithOverlay(changedEntries, "장비대와 인건비를 나누고 동기화하는 중입니다");
+  const title = synced ? "분할 완료" : "앱에는 분할했지만 구글시트 동기화에 실패했습니다";
+  window.alert(`${title}\n장비대: ${formatMoney(equipmentCost)}\n인건비: ${formatMoney(laborCost)}`);
+}
+
+async function applyLogBulkEdit() {
+  if (state.editingEntryId) {
+    window.alert("수정 중인 업무현황 행을 저장하거나 취소한 뒤 일괄수정해주세요.");
+    return;
+  }
+
+  const targets = currentLogRows.filter((entry) => entry.id);
+  if (targets.length === 0) {
+    window.alert("일괄수정할 업무현황 행이 없습니다. 먼저 필터를 확인해주세요.");
+    return;
+  }
+
+  const field = elements.logBulkField.value;
+  const label = selectedOptionLabel(elements.logBulkField);
+  const parsed = readBulkValue(field, elements.logBulkValue.value, ["cost", "workAmount"], ["mainProcess", "subProcess", "costType"]);
+  if (!parsed.ok) return;
+
+  if (field === "costType" && !["인건비", "장비대"].includes(parsed.value)) {
+    window.alert("비용 구분은 인건비 또는 장비대로 입력해주세요.");
+    return;
+  }
+
+  const displayValue = bulkDisplayValue(parsed.value);
+  const confirmed = window.confirm(`현재 화면에 표시된 업무현황 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요?`);
+  if (!confirmed) return;
+
+  const now = new Date().toISOString();
+  const status = getSyncEndpoint() ? "sending" : "local";
+  const targetIds = new Set(targets.map((entry) => entry.id));
+  const changedEntries = state.entries
+    .filter((entry) => targetIds.has(entry.id))
+    .map((entry) => ({
+      ...entry,
+      [field]: parsed.value,
+      updatedAt: now,
+      status
+    }));
+  const changedMap = new Map(changedEntries.map((entry) => [entry.id, entry]));
+  state.entries = state.entries.map((entry) => changedMap.get(entry.id) || entry);
+  elements.logBulkValue.value = "";
+  saveState();
+  renderAll();
+
+  await syncWorkRowsWithOverlay(changedEntries, "업무현황 일괄수정 내용을 동기화하는 중입니다");
 }
 
 async function commitMaterialOrder() {
@@ -1512,6 +1718,47 @@ async function saveInlineMaterial(row) {
   }
 }
 
+async function applyMaterialBulkEdit() {
+  if (state.editingMaterialId) {
+    window.alert("수정 중인 자재현황 행을 저장하거나 취소한 뒤 일괄수정해주세요.");
+    return;
+  }
+
+  const targets = currentMaterialRows.filter((order) => order.id);
+  if (targets.length === 0) {
+    window.alert("일괄수정할 자재현황 행이 없습니다. 먼저 필터를 확인해주세요.");
+    return;
+  }
+
+  const field = elements.materialBulkField.value;
+  const label = selectedOptionLabel(elements.materialBulkField);
+  const parsed = readBulkValue(field, elements.materialBulkValue.value, ["orderAmount", "lowPrice", "highPrice", "creditAmount"], ["process", "product"]);
+  if (!parsed.ok) return;
+
+  const displayValue = bulkDisplayValue(parsed.value);
+  const confirmed = window.confirm(`현재 화면에 표시된 자재현황 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요?`);
+  if (!confirmed) return;
+
+  const now = new Date().toISOString();
+  const status = getSyncEndpoint() ? "sending" : "local";
+  const targetIds = new Set(targets.map((order) => order.id));
+  const changedOrders = state.materialOrders
+    .filter((order) => targetIds.has(order.id))
+    .map((order) => ({
+      ...order,
+      [field]: parsed.value,
+      updatedAt: now,
+      status
+    }));
+  const changedMap = new Map(changedOrders.map((order) => [order.id, order]));
+  state.materialOrders = state.materialOrders.map((order) => changedMap.get(order.id) || order);
+  elements.materialBulkValue.value = "";
+  saveState();
+  renderAll();
+
+  await syncMaterialRowsWithOverlay(changedOrders, "자재현황 일괄수정 내용을 동기화하는 중입니다");
+}
+
 async function deleteMaterialOrder(id) {
   const target = state.materialOrders.find((order) => order.id === id);
   const confirmed = window.confirm("이 자재현황 항목을 앱에서 삭제할까요?");
@@ -1613,6 +1860,7 @@ function renderMaterialTable() {
     return dateMatch && quickDateMatch && processMatch && quickProcessMatch && productMatch && vendorMatch && areaMatch && memoMatch && (!search || searchText.includes(search));
   }).sort(compareDateAsc);
 
+  currentMaterialRows = rows;
   renderMaterialTableSummary(rows);
   elements.materialTableBody.innerHTML = "";
   if (rows.length === 0) {
@@ -2300,13 +2548,26 @@ function renderProcessSettings() {
 function renderEditableTags(container, type, values) {
   container.innerHTML = "";
   values.forEach((value) => {
-    const tag = document.createElement("button");
-    tag.className = "tag removable-tag";
-    tag.type = "button";
-    tag.dataset.removeType = type;
-    tag.dataset.removeValue = value;
-    tag.innerHTML = `${escapeHtml(value)} <span>X</span>`;
-    tag.addEventListener("click", () => removeSettingItem(type, value));
+    const tag = document.createElement("span");
+    tag.className = "tag editable-tag";
+
+    const name = document.createElement("span");
+    name.className = "tag-name";
+    name.textContent = value;
+
+    const renameButton = document.createElement("button");
+    renameButton.className = "tag-action";
+    renameButton.type = "button";
+    renameButton.textContent = "수정";
+    renameButton.addEventListener("click", () => renameSettingItem(type, value));
+
+    const removeButton = document.createElement("button");
+    removeButton.className = "tag-action danger";
+    removeButton.type = "button";
+    removeButton.textContent = "X";
+    removeButton.addEventListener("click", () => removeSettingItem(type, value));
+
+    tag.append(name, renameButton, removeButton);
     container.append(tag);
   });
 }
@@ -2379,6 +2640,82 @@ function removeSettingItem(type, value) {
   saveState();
   renderAll();
   queueSharedBackup();
+}
+
+async function renameSettingItem(type, oldValue) {
+  const key = settingConfigKey(type);
+  const input = window.prompt(`${settingTypeLabel(type)} 이름을 수정하세요.`, oldValue);
+  if (input === null) return;
+
+  const nextValue = input.trim();
+  if (!nextValue) {
+    window.alert("새 이름을 입력해주세요.");
+    return;
+  }
+  if (nextValue === oldValue) return;
+  if (state.config[key].includes(nextValue)) {
+    window.alert("이미 같은 이름이 있습니다.");
+    return;
+  }
+
+  const confirmed = window.confirm(`${oldValue} → ${nextValue}\n기존 업무현황에 기록된 같은 이름도 함께 바꿀까요?`);
+  if (!confirmed) return;
+
+  state.config[key] = state.config[key].map((item) => item === oldValue ? nextValue : item);
+
+  const field = settingEntryField(type);
+  const projectName = getActiveProjectName();
+  const now = new Date().toISOString();
+  const status = getSyncEndpoint() ? "sending" : "local";
+  const changedEntries = field
+    ? state.entries
+      .filter((entry) => (entry.project || "제천2덕동골") === projectName && entry[field] === oldValue)
+      .map((entry) => ({
+        ...entry,
+        [field]: nextValue,
+        updatedAt: now,
+        status
+      }))
+    : [];
+
+  if (changedEntries.length) {
+    const changedMap = new Map(changedEntries.map((entry) => [entry.id, entry]));
+    state.entries = state.entries.map((entry) => changedMap.get(entry.id) || entry);
+  }
+
+  saveState();
+  renderAll();
+
+  if (changedEntries.length) {
+    await syncWorkRowsWithOverlay(changedEntries, "기준 목록 수정 내용을 업무현황에 반영하는 중입니다");
+    return;
+  }
+
+  if (getSyncEndpoint()) {
+    await runWithSyncOverlay("기준 목록을 동기화하는 중입니다", syncSharedBackup);
+  } else {
+    queueSharedBackup();
+  }
+}
+
+function settingConfigKey(type) {
+  return type === "payment" ? "payments" : type;
+}
+
+function settingEntryField(type) {
+  return {
+    equipment: "equipment",
+    labor: "labor",
+    payment: "paymentStatus"
+  }[type] || "";
+}
+
+function settingTypeLabel(type) {
+  return {
+    equipment: "장비",
+    labor: "인부",
+    payment: "결제여부"
+  }[type] || "항목";
 }
 
 function renderSyncState() {

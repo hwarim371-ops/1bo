@@ -216,6 +216,26 @@
             <button class="secondary-btn danger-lite" id="cancelContractButton" type="button">도급 취소</button>
             <button class="secondary-btn" id="clearContractSelection" type="button">선택 해제</button>
           </div>
+          <div class="bulk-edit-bar" id="logBulkEditBar">
+            <div>
+              <strong>표시된 업무 일괄수정</strong>
+              <span>현재 필터로 보이는 업무현황 행 전체를 같은 값으로 바꿉니다.</span>
+            </div>
+            <select id="logBulkField" aria-label="업무현황 일괄수정 항목">
+              <option value="detailProcess">세부공정</option>
+              <option value="equipment">장비</option>
+              <option value="labor">인부</option>
+              <option value="workAmount">투입공수</option>
+              <option value="costType">비용 구분</option>
+              <option value="cost">비용</option>
+              <option value="paymentStatus">결제여부</option>
+              <option value="memo">비고</option>
+              <option value="mainProcess">주공정</option>
+              <option value="subProcess">부공정</option>
+            </select>
+            <input id="logBulkValue" type="text" placeholder="새 값 입력">
+            <button class="secondary-btn" id="applyLogBulkEdit" type="button">일괄수정</button>
+          </div>
           <div class="table-summary-grid" id="logTableSummary" aria-label="업무현황 합계"></div>
           <div class="table-wrap">
             <table class="data-table">
@@ -363,6 +383,25 @@
               <button class="primary-btn" id="materialInlineSaveButton" type="button">수정 저장</button>
               <button class="secondary-btn" id="materialInlineCancelButton" type="button">취소</button>
             </div>
+          </div>
+          <div class="bulk-edit-bar" id="materialBulkEditBar">
+            <div>
+              <strong>표시된 자재 일괄수정</strong>
+              <span>현재 필터로 보이는 자재현황 행 전체를 같은 값으로 바꿉니다.</span>
+            </div>
+            <select id="materialBulkField" aria-label="자재현황 일괄수정 항목">
+              <option value="process">공정</option>
+              <option value="product">제품</option>
+              <option value="vendor">업체명</option>
+              <option value="area">지역</option>
+              <option value="orderAmount">발주 금액</option>
+              <option value="lowPrice">최저가</option>
+              <option value="highPrice">최고가</option>
+              <option value="creditAmount">외상금액</option>
+              <option value="memo">비고</option>
+            </select>
+            <input id="materialBulkValue" type="text" placeholder="새 값 입력">
+            <button class="secondary-btn" id="applyMaterialBulkEdit" type="button">일괄수정</button>
           </div>
           <div class="table-summary-grid" id="materialTableSummary" aria-label="자재현황 합계"></div>
           <div class="table-wrap">
