@@ -301,7 +301,9 @@ function bindEvents() {
   elements.applyContractButton.addEventListener("click", applyContractDistribution);
   elements.cancelContractButton.addEventListener("click", cancelContractDistribution);
   elements.clearContractSelection.addEventListener("click", clearContractSelection);
-  elements.toggleLogSheetEditButton.addEventListener("click", startLogSheetEditMode);
+  if (elements.toggleLogSheetEditButton) {
+    elements.toggleLogSheetEditButton.addEventListener("click", () => logSheetEditMode ? saveLogSheetEdits() : startLogSheetEditMode());
+  }
   elements.applyLogBulkEdit.addEventListener("click", applyLogBulkEdit);
   elements.logDateFilter.addEventListener("change", renderLogs);
   elements.logEndDateFilter.addEventListener("change", renderLogs);
@@ -1915,9 +1917,11 @@ function renderEditState() {
   elements.logEditBar.querySelector("span").textContent = logSheetEditMode ? "원하는 셀을 바로 고친 뒤 완료를 누르세요." : "표 안의 값을 고친 뒤 저장하세요.";
   elements.logInlineSaveButton.textContent = logSheetEditMode ? "완료" : "수정 저장";
   elements.logInlineCancelButton.textContent = logSheetEditMode ? "수정모드 취소" : "취소";
-  elements.toggleLogSheetEditButton.textContent = logSheetEditMode ? "수정모드 중" : "표 수정모드";
-  elements.toggleLogSheetEditButton.disabled = editingEntry || logSheetEditMode;
-  elements.toggleLogSheetEditButton.classList.toggle("active", logSheetEditMode);
+  if (elements.toggleLogSheetEditButton) {
+    elements.toggleLogSheetEditButton.textContent = logSheetEditMode ? "완료" : "표 수정모드";
+    elements.toggleLogSheetEditButton.disabled = editingEntry;
+    elements.toggleLogSheetEditButton.classList.toggle("active", logSheetEditMode);
+  }
   elements.cancelMaterialEditButton.classList.toggle("hidden", !editingMaterial);
   elements.materialSubmitButton.textContent = editingMaterial ? "수정 저장" : "자재현황 저장";
   elements.materialEditBar.classList.toggle("hidden", !editingMaterial);
