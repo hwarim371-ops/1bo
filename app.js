@@ -1105,6 +1105,10 @@ function renderLogs() {
   elements.logTableBody.querySelectorAll("[data-inline-main]").forEach((select) => {
     select.addEventListener("change", () => refreshInlineSubProcess(select.closest("tr")));
   });
+  elements.logTableBody.querySelectorAll("[data-sheet-entry] .sheet-cell").forEach((input) => {
+    const eventName = input.tagName === "SELECT" || input.type === "date" ? "change" : "input";
+    input.addEventListener(eventName, () => markSheetCellDirty(input));
+  });
   elements.logTableBody.querySelectorAll("[data-save-entry]").forEach((button) => {
     button.addEventListener("click", () => saveInlineEntry(button.closest("tr")));
   });
@@ -1412,7 +1416,7 @@ function renderEntrySheetEditRow(entry) {
     <td><input class="inline-cell sheet-cell" data-field="workAmount" type="number" min="0" step="0.5" value="${escapeAttr(entry.workAmount || "")}"></td>
     <td><select class="inline-cell sheet-cell" data-field="costType">${optionsHtml(["인건비", "장비대"], entry.costType || "인건비")}</select></td>
     <td><input class="inline-cell sheet-cell" data-field="cost" type="number" min="0" step="1000" value="${escapeAttr(entry.cost || "")}"></td>
-    <td><select class="inline-cell sheet-cell" data-field="paymentStatus">${optionsHtml(paymentOptions, entry.paymentStatus || DEFAULT_PAYMENT_STATUS)}</select></td>
+    <td><select class="inline-cell sheet-cell" data-field="paymentStatus">${optionsHtml(paymentOptions, entry.paymentStatus)}</select></td>
     <td><input class="inline-cell sheet-cell" data-field="memo" type="text" value="${escapeAttr(entry.memo || "")}"></td>
     <td><span class="contract-marker ${entry.contractFlag ? "active" : ""}">${entry.contractFlag ? "도급" : "-"}</span></td>
     <td>${statusDotHtml("sending", "수정중")}</td>
@@ -1466,6 +1470,14 @@ function refreshInlineSubProcess(row) {
   const main = row.querySelector("[data-field='mainProcess']")?.value || "";
   const sub = row.querySelector("[data-inline-sub]");
   fillSelect(sub, getSubProcesses(main));
+  if (row.dataset.sheetEntry && sub) markSheetCellDirty(sub);
+}
+
+function markSheetCellDirty(input) {
+  if (!input) return;
+  input.dataset.dirty = "true";
+  const row = input.closest("[data-sheet-entry]");
+  if (row) row.dataset.dirty = "true";
 }
 
 async function saveInlineEntry(row) {
@@ -1533,9 +1545,12 @@ function cancelLogSheetEditMode() {
 }
 
 async function saveLogSheetEdits() {
-  const rows = Array.from(elements.logTableBody.querySelectorAll("[data-sheet-entry]"));
+  const rows = Array.from(elements.logTableBody.querySelectorAll("[data-sheet-entry][data-dirty='true']"));
   if (!rows.length) {
-    cancelLogSheetEditMode();
+    logSheetEditMode = false;
+    renderLogs();
+    renderEditState();
+    window.alert("변경된 내용이 없습니다.");
     return;
   }
 
@@ -1567,10 +1582,6 @@ async function saveLogSheetEdits() {
 
     if (!updated.date || !updated.mainProcess || !updated.subProcess) {
       window.alert("날짜, 주공정, 부공정은 비울 수 없습니다.");
-      return;
-    }
-    if (!updated.equipment && !updated.labor) {
-      window.alert("장비 또는 인부 중 하나는 입력되어야 합니다.");
       return;
     }
     if (workSyncKey(updated) !== workSyncKey(original)) {

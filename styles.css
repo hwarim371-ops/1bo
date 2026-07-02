@@ -1100,6 +1100,11 @@ th {
   border-color: var(--teal-strong);
 }
 
+.sheet-cell[data-dirty="true"] {
+  border-color: var(--teal-strong);
+  background: #e8fffb;
+}
+
 .sheet-edit-hint {
   display: inline-flex;
   align-items: center;
