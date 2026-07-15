@@ -62,6 +62,7 @@ let selectedContractEntryIds = new Set();
 let currentLogRows = [];
 let currentMaterialRows = [];
 let logSheetEditMode = false;
+let materialSheetEditMode = false;
 const projectAccessKeys = new Map();
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -182,6 +183,7 @@ function cacheElements() {
     materialMemoFilter: document.querySelector("#materialMemoFilter"),
     materialSearch: document.querySelector("#materialSearch"),
     clearMaterialFilters: document.querySelector("#clearMaterialFilters"),
+    toggleMaterialSheetEditButton: document.querySelector("#toggleMaterialSheetEditButton"),
     materialEditBar: document.querySelector("#materialEditBar"),
     materialInlineSaveButton: document.querySelector("#materialInlineSaveButton"),
     materialInlineCancelButton: document.querySelector("#materialInlineCancelButton"),
@@ -341,8 +343,11 @@ function bindEvents() {
   });
 
   elements.cancelMaterialEditButton.addEventListener("click", cancelMaterialEdit);
-  elements.materialInlineSaveButton.addEventListener("click", () => saveInlineMaterial(elements.materialTableBody.querySelector("[data-editing-material]")));
-  elements.materialInlineCancelButton.addEventListener("click", cancelMaterialEdit);
+  elements.materialInlineSaveButton.addEventListener("click", () => materialSheetEditMode ? saveMaterialSheetEdits() : saveInlineMaterial(elements.materialTableBody.querySelector("[data-editing-material]")));
+  elements.materialInlineCancelButton.addEventListener("click", () => materialSheetEditMode ? cancelMaterialSheetEditMode() : cancelMaterialEdit());
+  if (elements.toggleMaterialSheetEditButton) {
+    elements.toggleMaterialSheetEditButton.addEventListener("click", () => materialSheetEditMode ? saveMaterialSheetEdits() : startMaterialSheetEditMode());
+  }
   elements.applyMaterialBulkEdit.addEventListener("click", applyMaterialBulkEdit);
   elements.materialStartDateFilter.addEventListener("change", renderMaterialTable);
   elements.materialEndDateFilter.addEventListener("change", renderMaterialTable);
@@ -593,7 +598,10 @@ function setView(viewName) {
     state.editingEntryId = "";
     logSheetEditMode = false;
   }
-  if (state.activeView !== "materials") state.editingMaterialId = "";
+  if (state.activeView !== "materials") {
+    state.editingMaterialId = "";
+    materialSheetEditMode = false;
+  }
   saveState();
   renderNavigation();
   renderMetrics();
@@ -1476,7 +1484,7 @@ function refreshInlineSubProcess(row) {
 function markSheetCellDirty(input) {
   if (!input) return;
   input.dataset.dirty = "true";
-  const row = input.closest("[data-sheet-entry]");
+  const row = input.closest("[data-sheet-entry], [data-sheet-material]");
   if (row) row.dataset.dirty = "true";
 }
 
@@ -1795,6 +1803,7 @@ function clearMaterialForm() {
 function beginMaterialEdit(id) {
   const order = state.materialOrders.find((item) => item.id === id);
   if (!order) return;
+  materialSheetEditMode = false;
   state.editingMaterialId = id;
   state.editingEntryId = "";
   saveState();
@@ -1853,9 +1862,96 @@ async function saveInlineMaterial(row) {
   }
 }
 
+function startMaterialSheetEditMode() {
+  if (state.editingMaterialId) {
+    window.alert("수정 중인 자재현황 행을 먼저 저장하거나 취소해주세요.");
+    return;
+  }
+  if (!currentMaterialRows.length) {
+    window.alert("수정할 자재현황 행이 없습니다.");
+    return;
+  }
+  materialSheetEditMode = true;
+  state.editingMaterialId = "";
+  saveState();
+  renderMaterialTable();
+  renderEditState();
+}
+
+function cancelMaterialSheetEditMode() {
+  materialSheetEditMode = false;
+  renderMaterialTable();
+  renderEditState();
+}
+
+async function saveMaterialSheetEdits() {
+  const rows = Array.from(elements.materialTableBody.querySelectorAll("[data-sheet-material][data-dirty='true']"));
+  if (!rows.length) {
+    materialSheetEditMode = false;
+    renderMaterialTable();
+    renderEditState();
+    window.alert("변경된 내용이 없습니다.");
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const status = getSyncEndpoint() ? "sending" : "local";
+  const changedOrders = [];
+
+  for (const row of rows) {
+    const id = row.dataset.sheetMaterial;
+    const original = state.materialOrders.find((order) => order.id === id);
+    if (!original) continue;
+    const value = (field) => row.querySelector(`[data-field='${field}']`)?.value || "";
+    const updated = {
+      ...original,
+      date: value("date") || isoToday,
+      process: value("process"),
+      product: value("product").trim(),
+      vendor: value("vendor").trim(),
+      area: value("area").trim(),
+      orderAmount: numberOrBlank(value("orderAmount")),
+      lowPrice: numberOrBlank(value("lowPrice")),
+      highPrice: numberOrBlank(value("highPrice")),
+      memo: value("memo").trim(),
+      creditAmount: numberOrBlank(value("creditAmount")),
+      updatedAt: now,
+      status
+    };
+
+    if (!updated.process || !updated.product) {
+      window.alert("공정과 제품명은 비울 수 없습니다.");
+      return;
+    }
+    if (materialContentKey(updated) !== materialContentKey(original)) {
+      changedOrders.push(updated);
+    }
+  }
+
+  if (!changedOrders.length) {
+    materialSheetEditMode = false;
+    renderMaterialTable();
+    renderEditState();
+    window.alert("변경된 내용이 없습니다.");
+    return;
+  }
+
+  const changedMap = new Map(changedOrders.map((order) => [order.id, order]));
+  state.materialOrders = state.materialOrders.map((order) => changedMap.get(order.id) || order);
+  materialSheetEditMode = false;
+  saveState();
+  renderAll();
+
+  await syncMaterialRowsWithOverlay(changedOrders, "자재현황 수정 내용을 동기화하는 중입니다");
+}
+
 async function applyMaterialBulkEdit() {
   if (state.editingMaterialId) {
     window.alert("수정 중인 자재현황 행을 저장하거나 취소한 뒤 일괄수정해주세요.");
+    return;
+  }
+  if (materialSheetEditMode) {
+    window.alert("표 수정모드를 완료하거나 취소한 뒤 일괄수정해주세요.");
     return;
   }
 
@@ -1920,6 +2016,7 @@ function renderEditState() {
   const editingEntry = Boolean(state.editingEntryId);
   const editingMaterial = Boolean(state.editingMaterialId);
   const editingLogTable = editingEntry || logSheetEditMode;
+  const editingMaterialTable = editingMaterial || materialSheetEditMode;
   elements.cancelEntryEditButton.classList.toggle("hidden", !editingEntry);
   elements.addDraftButton.classList.toggle("hidden", editingEntry);
   elements.entrySubmitButton.textContent = editingEntry ? "수정 저장" : "업무현황 저장";
@@ -1935,7 +2032,16 @@ function renderEditState() {
   }
   elements.cancelMaterialEditButton.classList.toggle("hidden", !editingMaterial);
   elements.materialSubmitButton.textContent = editingMaterial ? "수정 저장" : "자재현황 저장";
-  elements.materialEditBar.classList.toggle("hidden", !editingMaterial);
+  elements.materialEditBar.classList.toggle("hidden", !editingMaterialTable);
+  elements.materialEditBar.querySelector("strong").textContent = materialSheetEditMode ? "자재현황 표 수정모드" : "자재현황 수정 중";
+  elements.materialEditBar.querySelector("span").textContent = materialSheetEditMode ? "원하는 셀을 바로 고친 뒤 완료를 누르세요." : "표 안의 값을 고친 뒤 저장하세요.";
+  elements.materialInlineSaveButton.textContent = materialSheetEditMode ? "완료" : "수정 저장";
+  elements.materialInlineCancelButton.textContent = materialSheetEditMode ? "수정모드 취소" : "취소";
+  if (elements.toggleMaterialSheetEditButton) {
+    elements.toggleMaterialSheetEditButton.textContent = materialSheetEditMode ? "완료" : "표 수정모드";
+    elements.toggleMaterialSheetEditButton.disabled = editingMaterial;
+    elements.toggleMaterialSheetEditButton.classList.toggle("active", materialSheetEditMode);
+  }
 }
 
 function ensureSelectValue(select, value) {
@@ -2017,6 +2123,13 @@ function renderMaterialTable() {
 
   rows.forEach((order) => {
     const tr = document.createElement("tr");
+    if (materialSheetEditMode) {
+      tr.dataset.sheetMaterial = order.id;
+      tr.className = "sheet-edit-row";
+      tr.innerHTML = renderMaterialSheetEditRow(order);
+      elements.materialTableBody.append(tr);
+      return;
+    }
     if (state.editingMaterialId === order.id) {
       tr.dataset.editingMaterial = order.id;
       tr.innerHTML = renderMaterialEditRow(order);
@@ -2048,6 +2161,10 @@ function renderMaterialTable() {
 
   elements.materialTableBody.querySelectorAll("[data-edit-material]").forEach((button) => {
     button.addEventListener("click", () => beginMaterialEdit(button.dataset.editMaterial));
+  });
+  elements.materialTableBody.querySelectorAll("[data-sheet-material] .sheet-cell").forEach((input) => {
+    const eventName = input.tagName === "SELECT" || input.type === "date" ? "change" : "input";
+    input.addEventListener(eventName, () => markSheetCellDirty(input));
   });
   elements.materialTableBody.querySelectorAll("[data-save-material]").forEach((button) => {
     button.addEventListener("click", () => saveInlineMaterial(button.closest("tr")));
@@ -2127,6 +2244,24 @@ function renderMaterialEditRow(order) {
         <button class="icon-btn" type="button" title="취소" data-cancel-material>X</button>
       </div>
     </td>
+  `;
+}
+
+function renderMaterialSheetEditRow(order) {
+  const mainOptions = state.config.processes.map((process) => process.name);
+  return `
+    <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(order.date || "")}"></td>
+    <td><select class="inline-cell sheet-cell" data-field="process">${optionsHtml(mainOptions, order.process)}</select></td>
+    <td><input class="inline-cell sheet-cell" data-field="product" type="text" value="${escapeAttr(order.product || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="vendor" type="text" value="${escapeAttr(order.vendor || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="area" type="text" value="${escapeAttr(order.area || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="orderAmount" type="number" min="0" step="1" value="${escapeAttr(order.orderAmount || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="lowPrice" type="number" min="0" step="1" value="${escapeAttr(order.lowPrice || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="highPrice" type="number" min="0" step="1" value="${escapeAttr(order.highPrice || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="memo" type="text" value="${escapeAttr(order.memo || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="creditAmount" type="number" min="0" step="1" value="${escapeAttr(order.creditAmount || "")}"></td>
+    <td>${statusDotHtml("sending", "수정중")}</td>
+    <td><span class="sheet-edit-hint">수정중</span></td>
   `;
 }
 
