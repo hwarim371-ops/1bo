@@ -257,6 +257,17 @@ function bindEvents() {
 
   elements.mainProcess.addEventListener("change", renderSubProcessOptions);
 
+  [elements.detailProcess, elements.entryMemo].forEach((textarea) => {
+    textarea.addEventListener("input", () => autoResizeWorkTextarea(textarea));
+    autoResizeWorkTextarea(textarea);
+  });
+
+  elements.entryForm.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.target instanceof HTMLTextAreaElement) return;
+    event.preventDefault();
+  });
+
   elements.segmentButtons.forEach((button) => {
     button.addEventListener("click", () => setKind(button.dataset.kind));
   });
@@ -291,8 +302,11 @@ function bindEvents() {
     renderMetrics();
   });
 
-  elements.entryForm.addEventListener("submit", async (event) => {
+  elements.entryForm.addEventListener("submit", (event) => {
     event.preventDefault();
+  });
+
+  elements.entrySubmitButton.addEventListener("click", async () => {
     await commitWorkEntries();
   });
 
@@ -692,6 +706,15 @@ function renderKindFields() {
   });
 }
 
+function autoResizeWorkTextarea(textarea) {
+  if (!textarea) return;
+  const maximumHeight = textarea === elements.detailProcess ? 360 : 180;
+  textarea.style.height = "auto";
+  const nextHeight = Math.min(textarea.scrollHeight, maximumHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maximumHeight ? "auto" : "hidden";
+}
+
 function renderResourceRows() {
   const count = Number(elements.resourceCount.value || 1);
   const existing = Array.from(elements.resourceRows.querySelectorAll(".resource-row")).map((row) => ({
@@ -706,25 +729,25 @@ function renderResourceRows() {
   for (let index = 0; index < count; index += 1) {
     const prior = existing[index] || {};
     const row = document.createElement("div");
-    row.className = "resource-row";
+    row.className = `resource-row ${state.activeKind === "labor" ? "labor-row" : "equipment-row"}`;
     row.innerHTML = `
       <div class="resource-row-title">${state.activeKind === "labor" ? "인력" : "장비"} ${index + 1}</div>
-      <label>
+      <label class="resource-item-field">
         <span>${state.activeKind === "labor" ? "인력" : "장비"}</span>
         <select class="resource-item"></select>
       </label>
-      <label>
+      <label class="resource-work-field">
         <span>투입공수</span>
         <select class="resource-work">
           <option value="1">일공수</option>
           <option value="0.5">반공수</option>
         </select>
       </label>
-      <label>
+      <label class="resource-cost-field">
         <span>비용</span>
         <input class="resource-cost" type="number" min="0" step="1000" data-auto="${prior.costAuto === false ? "false" : "true"}">
       </label>
-      <label>
+      <label class="resource-payment-field">
         <span>결제여부</span>
         <select class="resource-payment"></select>
       </label>
@@ -931,6 +954,8 @@ async function syncMaterialRowsWithOverlay(rows, title) {
 function clearEntryDetailFields() {
   elements.detailProcess.value = "";
   elements.entryMemo.value = "";
+  autoResizeWorkTextarea(elements.detailProcess);
+  autoResizeWorkTextarea(elements.entryMemo);
   elements.resourceCount.value = "1";
   renderResourceRows();
 }
@@ -954,7 +979,7 @@ function renderDrafts() {
           <button class="icon-btn delete" type="button" title="삭제" data-draft-delete="${entry.id}">X</button>
         </div>
       </header>
-      <p>${escapeHtml(entry.subProcess)}${entry.detailProcess ? ` · ${escapeHtml(entry.detailProcess)}` : ""}</p>
+      <p class="draft-detail-preview">${escapeHtml(entry.subProcess)}${entry.detailProcess ? ` · ${escapeHtml(entry.detailProcess)}` : ""}</p>
       <p>${entry.equipment ? `장비 ${escapeHtml(entry.equipment)}` : `인력 ${escapeHtml(entry.labor)}`} · ${formatWorkAmount(entry.workAmount)}</p>
       <p>${escapeHtml(entry.costType)} · ${formatMoney(entry.cost)}</p>
     `;
@@ -1086,7 +1111,13 @@ function renderLogs() {
       <td>${formatDate(entry.date)}</td>
       <td>${escapeHtml(entry.mainProcess)}</td>
       <td>${escapeHtml(entry.subProcess)}</td>
-      <td>${escapeHtml(entry.detailProcess || "")}</td>
+      <td class="detail-process-cell">
+        ${entry.detailProcess
+          ? isExpandableDetailText(entry.detailProcess)
+            ? `<button class="detail-process-preview" type="button" data-detail-toggle aria-expanded="false" title="클릭하면 전체 내용을 볼 수 있습니다"><span>${escapeHtml(entry.detailProcess)}</span></button>`
+            : `<span class="detail-process-static">${escapeHtml(entry.detailProcess)}</span>`
+          : `<span class="detail-process-empty">-</span>`}
+      </td>
       <td>${escapeHtml(entry.equipment || "")}</td>
       <td>${escapeHtml(entry.labor || "")}</td>
       <td>${formatWorkAmount(entry.workAmount)}</td>
@@ -1113,6 +1144,13 @@ function renderLogs() {
   elements.logTableBody.querySelectorAll("[data-inline-main]").forEach((select) => {
     select.addEventListener("change", () => refreshInlineSubProcess(select.closest("tr")));
   });
+  elements.logTableBody.querySelectorAll("[data-detail-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const expanded = button.classList.toggle("expanded");
+      button.setAttribute("aria-expanded", String(expanded));
+      button.title = expanded ? "클릭하면 내용을 접습니다" : "클릭하면 전체 내용을 볼 수 있습니다";
+    });
+  });
   elements.logTableBody.querySelectorAll("[data-sheet-entry] .sheet-cell").forEach((input) => {
     const eventName = input.tagName === "SELECT" || input.type === "date" ? "change" : "input";
     input.addEventListener(eventName, () => markSheetCellDirty(input));
@@ -1136,6 +1174,11 @@ function renderLogs() {
 
 function canSplitEquipmentEntry(entry) {
   return !entry.contractFlag && amountOf(entry.cost) > 0 && Boolean(entry.equipment || entry.costType === "장비대");
+}
+
+function isExpandableDetailText(value) {
+  const text = String(value || "");
+  return text.includes("\n") || text.length > 80;
 }
 
 function renderWorkTableSummary(rows) {
@@ -1391,7 +1434,7 @@ function renderEntryEditRow(entry) {
     <td><input class="inline-cell" data-field="date" type="date" value="${escapeAttr(entry.date || "")}"></td>
     <td><select class="inline-cell" data-field="mainProcess" data-inline-main>${optionsHtml(mainOptions, entry.mainProcess)}</select></td>
     <td><select class="inline-cell" data-field="subProcess" data-inline-sub>${optionsHtml(subs, entry.subProcess)}</select></td>
-    <td><input class="inline-cell" data-field="detailProcess" type="text" value="${escapeAttr(entry.detailProcess || "")}"></td>
+    <td><textarea class="inline-cell inline-multiline-cell" data-field="detailProcess" rows="3">${escapeHtml(entry.detailProcess || "")}</textarea></td>
     <td><select class="inline-cell" data-field="equipment">${optionsHtml(["", ...state.config.equipment], entry.equipment)}</select></td>
     <td><select class="inline-cell" data-field="labor">${optionsHtml(["", ...state.config.labor], entry.labor)}</select></td>
     <td><select class="inline-cell" data-field="workAmount">${optionsHtml(["1", "0.5"], String(entry.workAmount || "1"), { "1": "일공수", "0.5": "반공수" })}</select></td>
@@ -1418,7 +1461,7 @@ function renderEntrySheetEditRow(entry) {
     <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(entry.date || "")}"></td>
     <td><select class="inline-cell sheet-cell" data-field="mainProcess" data-inline-main>${optionsHtml(mainOptions, entry.mainProcess)}</select></td>
     <td><select class="inline-cell sheet-cell" data-field="subProcess" data-inline-sub>${optionsHtml(subs, entry.subProcess)}</select></td>
-    <td><input class="inline-cell sheet-cell" data-field="detailProcess" type="text" value="${escapeAttr(entry.detailProcess || "")}"></td>
+    <td><textarea class="inline-cell sheet-cell inline-multiline-cell" data-field="detailProcess" rows="3">${escapeHtml(entry.detailProcess || "")}</textarea></td>
     <td><select class="inline-cell sheet-cell" data-field="equipment">${optionsHtml(["", ...state.config.equipment], entry.equipment)}</select></td>
     <td><select class="inline-cell sheet-cell" data-field="labor">${optionsHtml(["", ...state.config.labor], entry.labor)}</select></td>
     <td><input class="inline-cell sheet-cell" data-field="workAmount" type="number" min="0" step="0.5" value="${escapeAttr(entry.workAmount || "")}"></td>

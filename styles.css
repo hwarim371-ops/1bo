@@ -474,8 +474,10 @@ button:focus-visible {
 
 .entry-dashboard {
   display: grid;
-  grid-template-columns: minmax(320px, 760px);
+  grid-template-columns: minmax(320px, 1fr);
   gap: 16px;
+  width: 100%;
+  max-width: 1080px;
   align-items: start;
   justify-content: start;
 }
@@ -488,16 +490,18 @@ button:focus-visible {
 
 .entry-form-panel > .section-heading,
 .entry-form-panel > .form-actions {
-  padding: 18px;
+  padding: 16px 18px;
 }
 
 .entry-form-panel > .form-actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
   border-top: 1px solid var(--line);
   background: #fff4e3;
 }
 
 .form-section {
-  margin: 0 18px 16px;
+  margin: 0 18px 14px;
   padding: 16px;
   border-top: 1px solid var(--line);
   border: 1px solid #d9c3a4;
@@ -511,10 +515,37 @@ button:focus-visible {
 }
 
 .section-label {
-  margin-bottom: 12px;
   color: var(--teal-strong);
   font-size: 13px;
   font-weight: 900;
+}
+
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-label-row > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.entry-basic-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.82fr) minmax(180px, 1fr) minmax(240px, 1.45fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.entry-basic-grid label,
+.detail-note-field,
+.supplemental-note-field,
+.resource-count-field {
+  min-width: 0;
 }
 
 .entry-form-panel .form-grid {
@@ -526,7 +557,8 @@ button:focus-visible {
 }
 
 .entry-form-panel input,
-.entry-form-panel select {
+.entry-form-panel select,
+.entry-form-panel textarea {
   min-height: 46px;
   border: 1.5px solid #c9ab82;
   background:
@@ -535,7 +567,8 @@ button:focus-visible {
 }
 
 .entry-form-panel input:focus,
-.entry-form-panel select:focus {
+.entry-form-panel select:focus,
+.entry-form-panel textarea:focus {
   border-color: var(--teal);
 }
 
@@ -549,6 +582,86 @@ button:focus-visible {
 .entry-form-panel select {
   font-weight: 800;
   cursor: pointer;
+}
+
+.detail-note-field,
+.supplemental-note-field {
+  display: block;
+}
+
+.detail-note-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-note-heading strong {
+  color: var(--teal-strong);
+  font-size: 14px;
+}
+
+.detail-note-heading small {
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+#detailProcess {
+  min-height: 164px;
+  padding: 13px 14px;
+  line-height: 1.65;
+  resize: vertical;
+  background: #fffdf8;
+}
+
+#entryMemo {
+  min-height: 72px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.field-help {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.resource-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(130px, 0.32fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.resource-kind-field > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.resource-kind-field .segmented-control {
+  margin: 0;
+}
+
+.supplemental-note-section {
+  border-left-color: var(--gold);
+  background: #fff8ed;
+}
+
+.entry-save-help {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#entrySubmitButton {
+  min-width: 168px;
 }
 
 .draft-tray {
@@ -692,7 +805,7 @@ label span {
 
 .resource-row {
   display: grid;
-  grid-template-columns: 68px minmax(0, 1.35fr) minmax(0, 0.9fr) minmax(0, 0.95fr) minmax(0, 1fr);
+  grid-template-columns: 64px minmax(180px, 1.45fr) minmax(112px, 0.72fr) minmax(128px, 0.82fr) minmax(136px, 0.92fr);
   gap: 10px;
   align-items: end;
   padding: 13px;
@@ -716,6 +829,15 @@ label span {
   color: #fff;
   font-weight: 900;
   background: linear-gradient(135deg, var(--teal-strong), var(--teal));
+}
+
+.resource-row.equipment-row {
+  border-color: #bdc39e;
+  background: #fbf9ed;
+}
+
+.resource-row.equipment-row .resource-row-title {
+  background: linear-gradient(135deg, #4e5837, var(--blue));
 }
 
 .resource-row label span {
@@ -750,6 +872,15 @@ label span {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 8px;
+}
+
+.draft-detail-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .draft-card strong,
@@ -1084,6 +1215,14 @@ th {
   min-width: 98px;
 }
 
+.inline-multiline-cell {
+  min-width: 220px;
+  min-height: 76px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+
 .sheet-edit-row td {
   background: #fff4dd;
 }
@@ -1171,6 +1310,64 @@ th {
 .material-table td:nth-child(9) {
   min-width: 180px;
   white-space: normal;
+}
+
+.data-table td.detail-process-cell {
+  min-width: 260px;
+  max-width: 360px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.detail-process-preview {
+  display: block;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: var(--ink);
+  font-size: inherit;
+  line-height: 1.45;
+  text-align: left;
+  background: transparent;
+}
+
+.detail-process-preview span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.detail-process-preview::after {
+  display: block;
+  margin-top: 3px;
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 900;
+  content: "펼치기";
+}
+
+.detail-process-preview.expanded span {
+  display: block;
+  overflow: visible;
+}
+
+.detail-process-preview.expanded::after {
+  content: "접기";
+}
+
+.detail-process-static {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.detail-process-empty {
+  color: var(--muted);
 }
 
 .material-table {
@@ -1921,7 +2118,7 @@ tr:last-child td {
   }
 
   .resource-row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 58px minmax(160px, 1.3fr) minmax(105px, 0.75fr) minmax(120px, 0.82fr) minmax(128px, 0.9fr);
   }
 
   .contract-toolbar {
@@ -1937,10 +2134,10 @@ tr:last-child td {
   }
 
   .resource-row-title {
-    justify-content: start;
-    place-items: center start;
-    padding-left: 12px;
-    grid-column: 1 / -1;
+    justify-content: normal;
+    place-items: center;
+    padding-left: 0;
+    grid-column: auto;
   }
 
   .process-settings-list {
@@ -2025,14 +2222,94 @@ tr:last-child td {
 
   .form-section,
   .draft-tray {
-    margin-right: 12px;
-    margin-left: 12px;
+    margin-right: 8px;
+    margin-left: 8px;
   }
 
   .entry-form-panel > .section-heading,
   .entry-form-panel > .form-actions {
-    padding-right: 12px;
-    padding-left: 12px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .entry-form-panel > .section-heading {
+    align-items: flex-start;
+    margin-bottom: 12px;
+  }
+
+  .entry-form-panel > .section-heading .pill {
+    display: none;
+  }
+
+  .form-section {
+    padding: 12px;
+  }
+
+  .entry-basic-grid {
+    grid-template-columns: minmax(122px, 0.86fr) minmax(145px, 1.14fr);
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .entry-sub-field {
+    grid-column: 1 / -1;
+  }
+
+  .entry-form-panel input,
+  .entry-form-panel select {
+    min-height: 44px;
+  }
+
+  #detailProcess {
+    min-height: 190px;
+    padding: 12px;
+  }
+
+  .resource-toolbar {
+    grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 8px;
+  }
+
+  .resource-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 9px;
+    padding: 11px;
+  }
+
+  .resource-row-title {
+    display: flex;
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    min-height: 32px;
+    padding: 0 10px;
+  }
+
+  .resource-item-field,
+  .resource-payment-field {
+    grid-column: 1 / -1;
+  }
+
+  .entry-form-panel > .form-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 8;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    box-shadow: 0 -8px 20px rgba(70, 42, 18, 0.1);
+  }
+
+  .entry-save-help,
+  #entrySubmitButton {
+    grid-column: 1 / -1;
+  }
+
+  #entrySubmitButton {
+    min-height: 48px;
+  }
+
+  .data-table td.detail-process-cell {
+    min-width: 230px;
+    max-width: 290px;
   }
 
   .segmented-control {

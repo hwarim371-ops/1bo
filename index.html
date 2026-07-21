@@ -107,42 +107,55 @@
             <div class="section-heading">
               <div>
                 <p class="eyebrow">업무현황 등록</p>
-                <h3>오늘 작업을 표준 항목으로 입력</h3>
+                <h3>공정과 작업내용을 한 번에 기록</h3>
               </div>
-              <span class="pill">업무현황 탭으로 저장</span>
+              <span class="pill">버튼을 눌러야 저장됩니다</span>
             </div>
 
-            <div class="form-section">
-              <div class="section-label">1. 작업 위치와 공정</div>
-              <div class="form-grid">
-                <label>
+            <div class="form-section process-entry-section">
+              <div class="section-label-row">
+                <div class="section-label">1. 날짜와 공정</div>
+                <span>필수 선택</span>
+              </div>
+              <div class="entry-basic-grid">
+                <label class="entry-date-field">
                   <span>날짜</span>
                   <input id="entryDate" name="date" type="date" required>
                 </label>
-                <label>
+                <label class="entry-main-field">
                   <span>주공정</span>
                   <select id="mainProcess" name="mainProcess" required></select>
                 </label>
-                <label class="wide">
+                <label class="entry-sub-field">
                   <span>부공정</span>
                   <select id="subProcess" name="subProcess" required></select>
                 </label>
-                <label class="wide">
-                  <span>세부공정</span>
-                  <input id="detailProcess" name="detailProcess" type="text" placeholder="예: 콘크리트타설, 트러스제작설치">
-                </label>
               </div>
+
+              <label class="detail-note-field">
+                <span class="detail-note-heading">
+                  <strong>세부공정 및 주요 작업내용</strong>
+                  <small>Enter는 줄바꿈</small>
+                </span>
+                <textarea id="detailProcess" name="detailProcess" rows="7" placeholder="진행한 작업, 확인한 문제, 협의·조치 결과를 자세히 기록하세요.&#10;예: 철골공사 견적 2개 업체 비교 후 단가와 포함 범위를 재조정함"></textarea>
+                <small class="field-help">여러 줄로 작성해도 업무현황에서는 공간에 맞게 접어서 표시됩니다.</small>
+              </label>
             </div>
 
-            <div class="form-section">
-              <div class="section-label">2. 투입 구분</div>
-              <div class="segmented-control" role="radiogroup" aria-label="투입 유형">
-                <button type="button" class="segment active" data-kind="labor">인력</button>
-                <button type="button" class="segment" data-kind="equipment">장비</button>
+            <div class="form-section resource-entry-section">
+              <div class="section-label-row">
+                <div class="section-label">2. 투입 구분</div>
+                <span>인력 또는 장비</span>
               </div>
-
-              <div class="form-grid">
-                <label>
+              <div class="resource-toolbar">
+                <div class="resource-kind-field">
+                  <span>투입 유형</span>
+                  <div class="segmented-control" role="radiogroup" aria-label="투입 유형">
+                    <button type="button" class="segment active" data-kind="labor">인력</button>
+                    <button type="button" class="segment" data-kind="equipment">장비</button>
+                  </div>
+                </div>
+                <label class="resource-count-field">
                   <span id="resourceCountLabel">투입 인원 수</span>
                   <select id="resourceCount">
                     <option value="1" selected>1명</option>
@@ -157,20 +170,22 @@
               <div class="resource-row-list" id="resourceRows"></div>
             </div>
 
-            <div class="form-section">
-              <div class="section-label">3. 공통 비고</div>
-              <div class="form-grid">
-                <label class="wide">
-                  <span>인력이름, 금액, 메모</span>
-                  <input id="entryMemo" type="text" placeholder="예: 홍길동, 180000, 오전 작업">
-                </label>
+            <div class="form-section supplemental-note-section">
+              <div class="section-label-row">
+                <div class="section-label">3. 인력·금액 보충 메모</div>
+                <span>선택 입력</span>
               </div>
+              <label class="supplemental-note-field">
+                <span>인력이름, 개별금액 또는 참고사항</span>
+                <textarea id="entryMemo" rows="2" placeholder="예: 홍길동 180,000원 / 오전 작업 / 업체 전달사항"></textarea>
+              </label>
             </div>
 
             <div class="form-actions">
-              <button class="secondary-btn" id="addDraftButton" type="button">항목 추가</button>
+              <span class="entry-save-help">Enter는 줄바꿈이며 실제 저장은 오른쪽 버튼으로만 진행됩니다.</span>
+              <button class="secondary-btn" id="addDraftButton" type="button">저장 전 항목 추가</button>
               <button class="secondary-btn hidden" id="cancelEntryEditButton" type="button">수정 취소</button>
-              <button class="primary-btn" id="entrySubmitButton" type="submit">업무현황 저장</button>
+              <button class="primary-btn" id="entrySubmitButton" type="button">업무현황 저장</button>
             </div>
 
             <div class="draft-tray hidden" id="draftTray">
