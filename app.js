@@ -4,7 +4,7 @@ const appConfig = window.APP_CONFIG || {};
 const sourceData = window.SHEET_DATA || {};
 
 const today = new Date();
-const isoToday = toISODate(today);
+let isoToday = toISODate(today);
 
 const views = {
   input: "업무등록",
@@ -26,7 +26,8 @@ const syncLabels = {
   sent: "시트저장",
   local: "저장대기",
   sending: "전송중",
-  failed: "전송실패"
+  failed: "전송대기",
+  conflict: "충돌확인"
 };
 const DEFAULT_PAYMENT_STATUS = "외상";
 
@@ -47,12 +48,16 @@ const seedState = {
   editingEntryId: "",
   editingMaterialId: "",
   draft: [],
+  sheetEdits: {},
+  workForms: {},
+  pendingShared: {},
   config: normalizeConfig(sourceData.config),
   entries: normalizeEntries(sourceData.workEntries),
   materialOrders: normalizeMaterialOrders(sourceData.materialOrders),
   dashboard: sourceData.dashboard || {}
 };
 
+let storageLoadFailed = false;
 let state = loadState();
 const elements = {};
 let savingWork = false;
@@ -63,6 +68,10 @@ let currentLogRows = [];
 let currentMaterialRows = [];
 let logSheetEditMode = false;
 let materialSheetEditMode = false;
+let workFormDirty = false;
+let syncInFlight = 0;
+let retryingPending = false;
+let sharedBackupTask = null;
 const projectAccessKeys = new Map();
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -85,6 +94,11 @@ function registerServiceWorker() {
 
 function cacheElements() {
   Object.assign(elements, {
+    summaryExtraDate: document.querySelector("#summaryExtraDate"),
+    constructionStartDate: document.querySelector("#constructionStartDate"),
+    summaryLedger: document.querySelector("#summaryLedger"),
+    summaryAudit: document.querySelector("#summaryAudit"),
+    syncNotice: document.querySelector("#syncNotice"),
     todayLabel: document.querySelector("#todayLabel"),
     accessGate: document.querySelector("#accessGate"),
     accessForm: document.querySelector("#accessForm"),
@@ -233,6 +247,30 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  ["input", "change"].forEach((eventName) => elements.entryForm.addEventListener(eventName, rememberWorkForm));
+  window.addEventListener("online", () => retryPendingRecords());
+  window.addEventListener("beforeunload", (event) => {
+    if (workFormDirty || hasSheetEdits() || pendingRecords().length || state.pendingShared[getActiveProjectName()]) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    isoToday = toISODate(new Date());
+    elements.todayLabel.textContent = "오늘 " + formatDate(isoToday);
+    renderSummary();
+  });
+  document.querySelector("#retryPendingButton").addEventListener("click", () => retryPendingRecords());
+  document.querySelector("#backupLocalButton").addEventListener("click", downloadLocalBackup);
+  elements.constructionStartDate.addEventListener("change", () => {
+    const project = getActiveProject();
+    project.constructionStartDate = elements.constructionStartDate.value;
+    project.settingsUpdatedAt = new Date().toISOString();
+    saveState();
+    renderSummary();
+    queueSharedBackup();
+  });
   elements.accessForm.addEventListener("submit", handleProjectAccess);
   elements.accessProjectSelect.addEventListener("change", () => {
     state.activeProject = elements.accessProjectSelect.value;
@@ -247,6 +285,11 @@ function bindEvents() {
   });
 
   elements.projectSelect.addEventListener("change", async () => {
+    if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) {
+      elements.projectSelect.value = state.activeProject;
+      window.alert("저장 또는 동기화가 끝난 뒤 프로젝트를 바꿔주세요.");
+      return;
+    }
     state.activeProject = elements.projectSelect.value;
     state.editingEntryId = "";
     state.editingMaterialId = "";
@@ -390,6 +433,8 @@ function bindEvents() {
     elements.materialSearch.value = "";
     renderMaterialTable();
   });
+  document.querySelector("#ledgerCategory").addEventListener("change", renderSummaryLedger);
+  document.querySelector("#ledgerPayment").addEventListener("change", renderSummaryLedger);
   elements.summaryStart.addEventListener("change", renderSummary);
   elements.summaryEnd.addEventListener("change", renderSummary);
   elements.summaryTabs.querySelectorAll("[data-summary-tab]").forEach((button) => {
@@ -452,6 +497,8 @@ function bindEvents() {
 }
 
 async function showProjectAccessGate(projectName) {
+  if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) return;
+  projectAccessKeys.clear();
   state.activeProject = projectName || state.projects[0]?.name || "제천2덕동골";
   saveState();
   fillSelect(elements.accessProjectSelect, state.projects.map((project) => project.name));
@@ -476,6 +523,7 @@ async function handleProjectAccess(event) {
   saveState();
   renderAll();
   elements.accessSubmitButton.disabled = true;
+  elements.accessProjectSelect.disabled = true;
   setAccessError("");
 
   try {
@@ -484,18 +532,21 @@ async function handleProjectAccess(event) {
     showSyncOverlay("최신 자료를 불러오는 중입니다", `${projectName} 구글시트와 동기화하고 있습니다.`);
     const restored = await restoreFromGoogleSheet({ silent: true, accessKey });
     if (!restored) throw new Error("동기화에 실패했습니다.");
-    completeSyncOverlay("동기화 완료", "최신 자료로 접속합니다.");
+    completeSyncOverlay("불러오기 완료", pendingRecords().length ? "미전송 기록을 보존했습니다. 접속 후 저장을 다시 시도합니다." : "최신 자료로 접속합니다.");
     await wait(650);
     hideSyncOverlay();
     elements.accessGate.classList.add("hidden");
     document.body.classList.remove("project-locked");
     setView("input");
+    restoreWorkForm();
+    await retryPendingRecords();
   } catch (error) {
     projectAccessKeys.delete(projectName);
     hideSyncOverlay();
     setAccessError(error.message || "비밀번호 확인 또는 동기화에 실패했습니다.");
   } finally {
     elements.accessSubmitButton.disabled = false;
+    elements.accessProjectSelect.disabled = false;
   }
 }
 
@@ -557,8 +608,9 @@ function initializeDefaults() {
   elements.todayLabel.textContent = `오늘 ${formatDate(isoToday)}`;
   elements.entryDate.value = elements.entryDate.value || isoToday;
   elements.materialDate.value = elements.materialDate.value || isoToday;
-  elements.summaryStart.value = elements.summaryStart.value || sourceData.dashboard?.constructionStartDate || "";
-  elements.summaryEnd.value = elements.summaryEnd.value || isoToday;
+  elements.summaryStart.value = elements.summaryStart.value || "";
+  elements.summaryExtraDate.value = toISODate(new Date());
+  elements.summaryEnd.value = elements.summaryEnd.value || "";
   renderProjectOptions();
   elements.syncEndpoint.value = getSyncEndpoint();
 }
@@ -616,8 +668,12 @@ function setView(viewName) {
     state.editingMaterialId = "";
     materialSheetEditMode = false;
   }
+  if (state.activeView === "logs") logSheetEditMode = Object.keys(sheetEdits("work")).length > 0;
+  if (state.activeView === "materials") materialSheetEditMode = Object.keys(sheetEdits("material")).length > 0;
   saveState();
   renderNavigation();
+  renderLogs();
+  renderMaterialTable();
   renderMetrics();
   renderEditState();
 }
@@ -692,6 +748,7 @@ function setKind(kind) {
   saveState();
   renderKindFields();
   renderResourceRows();
+  rememberWorkForm();
 }
 
 function renderKindFields() {
@@ -745,7 +802,7 @@ function renderResourceRows() {
       </label>
       <label class="resource-cost-field">
         <span>비용</span>
-        <input class="resource-cost" type="number" min="0" step="1000" data-auto="${prior.costAuto === false ? "false" : "true"}">
+        <input class="resource-cost" type="number" min="0" step="1" data-auto="${prior.costAuto === false ? "false" : "true"}">
       </label>
       <label class="resource-payment-field">
         <span>결제여부</span>
@@ -797,6 +854,10 @@ function buildEntriesFromForm() {
   }
 
   const rows = Array.from(elements.resourceRows.querySelectorAll(".resource-row"));
+  if (rows.some((row) => !row.querySelector(".resource-cost").validity.valid || parseAmount(row.querySelector(".resource-cost").value) < 0)) {
+    window.alert("비용에는 0 이상의 숫자를 입력해주세요.");
+    return null;
+  }
   if (rows.length === 0) {
     window.alert("투입 항목을 먼저 선택해주세요.");
     return null;
@@ -807,7 +868,8 @@ function buildEntriesFromForm() {
     const workAmount = numberOrBlank(row.querySelector(".resource-work")?.value);
     const equipment = state.activeKind === "equipment" ? item : "";
     const labor = state.activeKind === "labor" ? item : "";
-    const cost = numberOrBlank(row.querySelector(".resource-cost")?.value) || estimateCost({ equipment, labor, workAmount });
+    const enteredCost = numberOrBlank(row.querySelector(".resource-cost")?.value);
+    const cost = enteredCost === "" ? estimateCost({ equipment, labor, workAmount }) : enteredCost;
 
     return {
       id: cryptoId(),
@@ -881,19 +943,21 @@ async function commitWorkEntries() {
     return;
   }
 
-  if (state.draft.length === 0) {
+  const projectName = getActiveProjectName();
+  const projectDraft = state.draft.filter((entry) => entry.project === projectName);
+  if (projectDraft.length === 0 || workFormDirty) {
     const entries = buildEntriesFromForm();
     if (!entries) return;
-    state.draft.push(...entries);
+    projectDraft.push(...entries);
   }
 
-  const entriesToSave = state.draft.map((entry) => ({
+  const entriesToSave = projectDraft.map((entry) => ({
     ...entry,
     status: getSyncEndpoint() ? "sending" : "local"
   }));
 
   state.entries.unshift(...entriesToSave);
-  state.draft = [];
+  state.draft = state.draft.filter((entry) => entry.project !== projectName);
   saveState();
   renderAll();
 
@@ -916,17 +980,139 @@ async function commitWorkEntries() {
 }
 
 function updateEntrySyncStatus(savedEntries, status) {
-  const ids = new Set(savedEntries.map((entry) => entry.id));
-  state.entries = state.entries.map((entry) => ids.has(entry.id) ? { ...entry, status } : entry);
-  if (status === "sent") state.lastSync = new Date().toISOString();
-  saveState();
+  updateRecordsSyncStatus("entries", savedEntries, status, workSyncKey);
 }
 
 function updateMaterialSyncStatus(savedOrders, status) {
-  const ids = new Set(savedOrders.map((order) => order.id));
-  state.materialOrders = state.materialOrders.map((order) => ids.has(order.id) ? { ...order, status } : order);
+  updateRecordsSyncStatus("materialOrders", savedOrders, status, materialContentKey);
+}
+
+function updateRecordsSyncStatus(field, saved, status, key) {
+  const sent = new Map(saved.map((row) => [row.id, row]));
+  state[field] = state[field].map((row) => {
+    const original = sent.get(row.id);
+    if (row.project !== getActiveProjectName() || !original || key(row) !== key(original) || row.status === "conflict") return row;
+    return { ...row, status };
+  });
   if (status === "sent") state.lastSync = new Date().toISOString();
   saveState();
+  renderSyncState();
+}
+
+function pendingRecords() {
+  return [...projectEntries(), ...projectMaterialOrders()].filter((row) => ["local", "sending", "failed", "conflict"].includes(row.status));
+}
+
+function mergeProjectRecords(localRows, remoteRows, projectName, type) {
+  const key = type === "work" ? workSyncKey : materialContentKey;
+  const remote = new Map(remoteRows.map((row) => [row.id, { ...row, project: projectName, status: "synced" }]));
+  const merged = new Map([...remote].filter(([, row]) => !isDeletedRecord(type, row, projectName)));
+  localRows.filter((row) => row.project === projectName && ["local", "sending", "failed", "conflict"].includes(row.status)).forEach((local) => {
+    const server = remote.get(local.id);
+    if (server && key(server) === key(local) && !isDeletedRecord(type, server, projectName)) return;
+    const conflict = isDeletedRecord(type, local, projectName)
+      || (server && (!local._syncBase || key(server) !== local._syncBase))
+      || (!server && Boolean(local._syncBase));
+    merged.set(local.id, {
+      ...local,
+      status: conflict ? "conflict" : "failed",
+      _remoteConflict: conflict ? (server || null) : undefined
+    });
+  });
+  return [...localRows.filter((row) => row.project !== projectName), ...merged.values()];
+}
+
+async function retryPendingRecords() {
+  if (retryingPending || savingWork || savingMaterial || syncInFlight || !getAccessKey() || navigator.onLine === false || document.body.classList.contains("project-locked")) return false;
+  retryingPending = true;
+  renderSyncState();
+  try {
+    for (const [field, type, key] of [["entries", "workEntries", workSyncKey], ["materialOrders", "materialOrders", materialContentKey]]) {
+      const rows = state[field].filter((row) => row.project === getActiveProjectName() && ["local", "failed", "sending"].includes(row.status));
+      if (!rows.length) continue;
+      const sent = await syncPayload(type, rows);
+      updateRecordsSyncStatus(field, rows, sent ? "sent" : "failed", key);
+    }
+    if (state.pendingShared[getActiveProjectName()]) await syncSharedBackup();
+    renderLogs();
+    renderMaterialTable();
+    renderSummary();
+    return pendingRecords().length === 0 && !state.pendingShared[getActiveProjectName()];
+  } finally {
+    retryingPending = false;
+    renderSyncState();
+  }
+}
+
+function downloadLocalBackup() {
+  const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), state }, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "hwarim-local-backup-" + toISODate(new Date()) + ".json";
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function renderSyncConflicts(container) {
+  for (const [type, rows] of [["work", projectEntries()], ["material", projectMaterialOrders()]]) {
+    rows.filter((row) => row.status === "conflict").forEach((row) => {
+      const details = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = (type === "work" ? "업무 " : "자재 ") + (row.date || "날짜 없음") + " · " + (row.detailProcess || row.product || row.labor || row.equipment || row.id);
+      const pre = document.createElement("pre");
+      const fields = type === "work" ? ["date", "detailProcess", "equipment", "labor", "cost", "paymentStatus", "memo"] : ["date", "product", "vendor", "orderAmount", "creditAmount", "memo"];
+      const labels = { date: "날짜", detailProcess: "세부공정", equipment: "장비", labor: "인력", cost: "비용", paymentStatus: "결제여부", memo: "비고", product: "제품", vendor: "업체", orderAmount: "발주금액", creditAmount: "외상금액" };
+      pre.textContent = fields.map((field) => labels[field] + ": 기기 [" + (row[field] ?? "") + "] / 시트 [" + (row._remoteConflict?.[field] ?? "없음") + "]").join("\n");
+      const useServer = document.createElement("button");
+      useServer.type = "button";
+      useServer.className = "secondary-btn";
+      useServer.textContent = "시트 값 선택";
+      useServer.addEventListener("click", () => resolveSyncConflict(type, row.id, false));
+      const useLocal = document.createElement("button");
+      useLocal.type = "button";
+      useLocal.className = "secondary-btn";
+      useLocal.textContent = "기기 값 선택 후 전송";
+      useLocal.addEventListener("click", () => resolveSyncConflict(type, row.id, true));
+      details.append(title, pre, useServer, useLocal);
+      container.append(details);
+    });
+  }
+}
+
+async function resolveSyncConflict(type, id, useLocal) {
+  if (syncInFlight || retryingPending || savingWork || savingMaterial) return;
+  const field = type === "work" ? "entries" : "materialOrders";
+  const key = type === "work" ? workSyncKey : materialContentKey;
+  const row = state[field].find((item) => item.project === getActiveProjectName() && item.id === id);
+  if (!row || !window.confirm(useLocal ? "기기 값을 선택할까요? 시트의 다른 수정값을 덮어쓸 수 있습니다. 두 버전이 담긴 백업을 먼저 내려받습니다." : "시트 값을 선택할까요? 기기의 미전송 수정은 백업에 보관됩니다.")) return;
+  if (isDeletedRecord(type, row)) {
+    window.alert("삭제된 항목과 충돌했습니다. 백업을 내려받고 삭제 여부를 먼저 확인해주세요.");
+    return;
+  }
+  retryingPending = true;
+  try {
+    const backup = await loadSheetBackupJsonp();
+    const remoteRows = type === "work" ? backup.workEntries : backup.materialOrders;
+    if (!Array.isArray(remoteRows)) throw new Error("시트 응답을 확인하지 못했습니다.");
+    const remote = remoteRows.find((item) => item.id === id);
+    downloadLocalBackup();
+    if (!useLocal) {
+      state[field] = state[field].filter((item) => item !== row);
+      if (remote) state[field].push({ ...remote, project: getActiveProjectName(), status: "synced" });
+    } else {
+      row._syncBase = remote ? key(remote) : undefined;
+      row.status = "failed";
+      delete row._remoteConflict;
+    }
+    saveState();
+    renderAll();
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    retryingPending = false;
+  }
+  if (useLocal) await retryPendingRecords();
 }
 
 async function syncWorkRowsWithOverlay(rows, title) {
@@ -957,19 +1143,73 @@ function clearEntryDetailFields() {
   autoResizeWorkTextarea(elements.detailProcess);
   autoResizeWorkTextarea(elements.entryMemo);
   elements.resourceCount.value = "1";
+  elements.resourceRows.innerHTML = "";
   renderResourceRows();
+  workFormDirty = false;
+  delete state.workForms[getActiveProjectName()];
+  saveState();
+}
+
+function rememberWorkForm() {
+  if (savingWork) return;
+  workFormDirty = true;
+  state.workForms[getActiveProjectName()] = {
+    date: elements.entryDate.value,
+    mainProcess: elements.mainProcess.value,
+    subProcess: elements.subProcess.value,
+    detail: elements.detailProcess.value,
+    memo: elements.entryMemo.value,
+    kind: state.activeKind,
+    rows: Array.from(elements.resourceRows.querySelectorAll(".resource-row")).map((row) => ({
+      item: row.querySelector(".resource-item").value,
+      work: row.querySelector(".resource-work").value,
+      cost: row.querySelector(".resource-cost").value,
+      auto: row.querySelector(".resource-cost").dataset.auto,
+      payment: row.querySelector(".resource-payment").value
+    }))
+  };
+  saveState();
+}
+
+function restoreWorkForm() {
+  const draft = state.workForms[getActiveProjectName()];
+  workFormDirty = Boolean(draft);
+  elements.detailProcess.value = draft?.detail || "";
+  elements.entryMemo.value = draft?.memo || "";
+  elements.entryDate.value = draft?.date || toISODate(new Date());
+  if (draft) {
+    state.activeKind = draft.kind;
+    ensureSelectValue(elements.mainProcess, draft.mainProcess);
+    renderSubProcessOptions();
+    ensureSelectValue(elements.subProcess, draft.subProcess);
+  }
+  elements.resourceCount.value = String(draft?.rows.length || 1);
+  elements.resourceRows.innerHTML = "";
+  renderKindFields();
+  renderResourceRows();
+  (draft?.rows || []).forEach((saved, index) => {
+    const row = elements.resourceRows.children[index];
+    ensureSelectValue(row.querySelector(".resource-item"), saved.item);
+    ensureSelectValue(row.querySelector(".resource-work"), saved.work);
+    row.querySelector(".resource-cost").value = saved.cost;
+    row.querySelector(".resource-cost").dataset.auto = saved.auto;
+    ensureSelectValue(row.querySelector(".resource-payment"), saved.payment);
+  });
+  autoResizeWorkTextarea(elements.detailProcess);
+  autoResizeWorkTextarea(elements.entryMemo);
 }
 
 function renderDrafts() {
-  elements.draftCount.textContent = `${state.draft.length}건`;
+  const drafts = state.draft.filter((entry) => entry.project === getActiveProjectName());
+  elements.draftCount.textContent = `${drafts.length}건`;
   elements.draftList.innerHTML = "";
-  elements.draftTray.classList.toggle("hidden", state.draft.length === 0);
+  elements.draftTray.classList.toggle("hidden", drafts.length === 0);
 
-  if (state.draft.length === 0) {
+  if (drafts.length === 0) {
     return;
   }
 
-  state.draft.forEach((entry) => {
+  drafts.forEach((entry) => {
     const card = document.createElement("article");
     card.className = "draft-card";
     card.innerHTML = `
@@ -1094,10 +1334,12 @@ function renderLogs() {
 
   rows.forEach((entry) => {
     const tr = document.createElement("tr");
+    tr.dataset.recordId = entry.id;
     if (logSheetEditMode) {
       tr.dataset.sheetEntry = entry.id;
       tr.className = "sheet-edit-row";
       tr.innerHTML = renderEntrySheetEditRow(entry);
+      applySheetDraftToRow(tr, entry, "work");
       elements.logTableBody.append(tr);
       return;
     }
@@ -1210,13 +1452,11 @@ function appendWorkTotalRow(rows) {
 }
 
 function workTableTotals(rows) {
-  const laborCost = sum(rows.filter((entry) => entry.costType === "인건비").map((entry) => amountOf(entry.cost)));
-  const equipmentCost = sum(rows.filter((entry) => entry.costType === "장비대").map((entry) => amountOf(entry.cost)));
   return {
     workAmount: sum(rows.map((entry) => amountOf(entry.workAmount))),
-    laborCost,
-    equipmentCost,
-    totalCost: laborCost + equipmentCost,
+    laborCost: sum(rows.filter((entry) => entry.costType === "인건비").map((entry) => amountOf(entry.cost))),
+    equipmentCost: sum(rows.filter((entry) => entry.costType === "장비대").map((entry) => amountOf(entry.cost))),
+    totalCost: sum(rows.map((entry) => amountOf(entry.cost))),
     pendingCount: rows.filter((entry) => !entry.paymentStatus).length
   };
 }
@@ -1458,17 +1698,17 @@ function renderEntrySheetEditRow(entry) {
   const subs = getSubProcesses(entry.mainProcess);
   const paymentOptions = ["", ...uniqueValues([...state.config.payments, DEFAULT_PAYMENT_STATUS])];
   return `
-    <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(entry.date || "")}"></td>
-    <td><select class="inline-cell sheet-cell" data-field="mainProcess" data-inline-main>${optionsHtml(mainOptions, entry.mainProcess)}</select></td>
-    <td><select class="inline-cell sheet-cell" data-field="subProcess" data-inline-sub>${optionsHtml(subs, entry.subProcess)}</select></td>
-    <td><textarea class="inline-cell sheet-cell inline-multiline-cell" data-field="detailProcess" rows="3">${escapeHtml(entry.detailProcess || "")}</textarea></td>
+    <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(entry.date ?? "")}"></td>
+    <td><select class="inline-cell sheet-cell" data-field="mainProcess" data-inline-main>${optionsHtml(["", ...mainOptions], entry.mainProcess)}</select></td>
+    <td><select class="inline-cell sheet-cell" data-field="subProcess" data-inline-sub>${optionsHtml(["", ...subs], entry.subProcess)}</select></td>
+    <td><textarea class="inline-cell sheet-cell inline-multiline-cell" data-field="detailProcess" rows="3">${escapeHtml(entry.detailProcess ?? "")}</textarea></td>
     <td><select class="inline-cell sheet-cell" data-field="equipment">${optionsHtml(["", ...state.config.equipment], entry.equipment)}</select></td>
     <td><select class="inline-cell sheet-cell" data-field="labor">${optionsHtml(["", ...state.config.labor], entry.labor)}</select></td>
-    <td><input class="inline-cell sheet-cell" data-field="workAmount" type="number" min="0" step="0.5" value="${escapeAttr(entry.workAmount || "")}"></td>
-    <td><select class="inline-cell sheet-cell" data-field="costType">${optionsHtml(["인건비", "장비대"], entry.costType || "인건비")}</select></td>
-    <td><input class="inline-cell sheet-cell" data-field="cost" type="number" min="0" step="1000" value="${escapeAttr(entry.cost || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="workAmount" type="number" min="0" step="0.5" value="${escapeAttr(entry.workAmount ?? "")}"></td>
+    <td><select class="inline-cell sheet-cell" data-field="costType">${optionsHtml(["", "인건비", "장비대"], entry.costType)}</select></td>
+    <td><input class="inline-cell sheet-cell" data-field="cost" type="number" min="0" step="1000" value="${escapeAttr(entry.cost ?? "")}"></td>
     <td><select class="inline-cell sheet-cell" data-field="paymentStatus">${optionsHtml(paymentOptions, entry.paymentStatus)}</select></td>
-    <td><input class="inline-cell sheet-cell" data-field="memo" type="text" value="${escapeAttr(entry.memo || "")}"></td>
+    <td><textarea class="inline-cell sheet-cell inline-multiline-cell" data-field="memo" rows="2">${escapeHtml(entry.memo ?? "")}</textarea></td>
     <td><span class="contract-marker ${entry.contractFlag ? "active" : ""}">${entry.contractFlag ? "도급" : "-"}</span></td>
     <td>${statusDotHtml("sending", "수정중")}</td>
     <td><span class="sheet-edit-hint">수정중</span></td>
@@ -1498,15 +1738,9 @@ async function deleteEntry(id) {
 }
 
 function beginEntryEdit(id) {
-  const entry = state.entries.find((item) => item.id === id);
-  if (!entry) return;
-  logSheetEditMode = false;
-  state.editingEntryId = id;
-  state.editingMaterialId = "";
-  state.draft = [];
-  saveState();
-  renderLogs();
-  renderEditState();
+  startLogSheetEditMode();
+  const row = Array.from(elements.logTableBody.querySelectorAll("[data-sheet-entry]")).find((item) => item.dataset.sheetEntry === id);
+  row?.querySelector("[data-field='detailProcess']")?.focus({ preventScroll: true });
 }
 
 function cancelEntryEdit() {
@@ -1520,15 +1754,120 @@ function refreshInlineSubProcess(row) {
   if (!row) return;
   const main = row.querySelector("[data-field='mainProcess']")?.value || "";
   const sub = row.querySelector("[data-inline-sub]");
-  fillSelect(sub, getSubProcesses(main));
-  if (row.dataset.sheetEntry && sub) markSheetCellDirty(sub);
+  if (!sub) return;
+  const current = sub.value;
+  fillSelect(sub, ["", ...getSubProcesses(main)]);
+  ensureSelectValue(sub, current);
 }
 
 function markSheetCellDirty(input) {
-  if (!input) return;
-  input.dataset.dirty = "true";
-  const row = input.closest("[data-sheet-entry], [data-sheet-material]");
-  if (row) row.dataset.dirty = "true";
+  const row = input?.closest("[data-sheet-entry], [data-sheet-material]");
+  if (!row) return;
+  const type = row.dataset.sheetEntry ? "work" : "material";
+  const id = row.dataset.sheetEntry || row.dataset.sheetMaterial;
+  const original = (type === "work" ? projectEntries() : projectMaterialOrders()).find((entry) => entry.id === id);
+  if (!original) return;
+  const edits = sheetEdits(type);
+  const field = input.dataset.field;
+  const before = edits[id]?.[field]?.before ?? original[field] ?? "";
+  const value = input.value;
+  if (String(value) === String(before)) {
+    if (edits[id]) delete edits[id][field];
+    if (edits[id] && !Object.keys(edits[id]).length) delete edits[id];
+    delete input.dataset.dirty;
+  } else {
+    (edits[id] ||= {})[field] = { before, value };
+    input.dataset.dirty = "true";
+  }
+  row.dataset.dirty = String(Boolean(edits[id]));
+  saveState();
+  renderEditState();
+}
+
+function sheetEdits(type) {
+  const project = getActiveProjectName();
+  const edits = state.sheetEdits[project] ||= { work: {}, material: {} };
+  return edits[type];
+}
+
+function hasSheetEdits() {
+  return Object.keys(sheetEdits("work")).length + Object.keys(sheetEdits("material")).length > 0;
+}
+
+function applySheetDraftToRow(row, original, type) {
+  const edits = sheetEdits(type)[original.id] || {};
+  for (const [field, edit] of Object.entries(edits)) {
+    const input = Array.from(row.querySelectorAll("[data-field]")).find((item) => item.dataset.field === field);
+    if (!input) continue;
+    if (input.tagName === "SELECT") ensureSelectValue(input, edit.value);
+    else input.value = edit.value;
+    input.dataset.dirty = "true";
+  }
+  row.dataset.dirty = String(Object.keys(edits).length > 0);
+}
+
+function patchedRecord(original, edits, type) {
+  const numeric = type === "work" ? ["workAmount", "cost"] : ["orderAmount", "creditAmount", "lowPrice", "highPrice"];
+  const required = type === "work" ? ["date", "mainProcess", "subProcess"] : ["date", "process", "product"];
+  const updated = { ...original };
+  for (const [field, edit] of Object.entries(edits)) {
+    if (String(original[field] ?? "") !== String(edit.before ?? "")) {
+      throw new Error("다른 곳에서 같은 칸이 변경되었습니다. 수정모드를 취소하고 최신 값을 확인해주세요.");
+    }
+    if (required.includes(field) && !String(edit.value).trim()) throw new Error("수정한 필수 항목은 비울 수 없습니다.");
+    if (numeric.includes(field)) {
+      if (!Number.isFinite(parseAmount(edit.value)) || parseAmount(edit.value) < 0) throw new Error("금액과 공수에는 0 이상의 숫자를 입력해주세요.");
+      updated[field] = numberOrBlank(edit.value);
+    } else {
+      updated[field] = edit.value;
+    }
+  }
+  if (type === "material" && ("orderAmount" in edits || "creditAmount" in edits)) validateMaterialAmounts(updated);
+  return { ...updated, updatedAt: new Date().toISOString(), status: getSyncEndpoint() ? "sending" : "local" };
+}
+
+function validateMaterialAmounts(order) {
+  for (const field of ["orderAmount", "creditAmount", "lowPrice", "highPrice"]) {
+    if (!Number.isFinite(parseAmount(order[field])) || parseAmount(order[field]) < 0) throw new Error("자재 금액은 0 이상의 숫자여야 합니다.");
+  }
+  if (amountOf(order.creditAmount) > amountOf(order.orderAmount)) throw new Error("외상금액이 발주금액보다 큽니다. 금액을 확인해주세요.");
+}
+
+async function saveSheetEdits(type) {
+  if (savingWork || savingMaterial || retryingPending) return;
+  const edits = sheetEdits(type);
+  const source = type === "work" ? projectEntries() : projectMaterialOrders();
+  const changed = [];
+  try {
+    for (const [id, fields] of Object.entries(edits)) {
+      const original = source.find((entry) => entry.id === id);
+      if (!original) throw new Error("수정 중인 행이 삭제되었습니다. 임시 수정값을 확인한 뒤 취소해주세요.");
+      changed.push(patchedRecord(original, fields, type));
+    }
+  } catch (error) {
+    window.alert(error.message);
+    return;
+  }
+  const count = Object.values(edits).reduce((total, fields) => total + Object.keys(fields).length, 0);
+  if (count && !window.confirm(changed.length + "개 행의 수정한 " + count + "개 칸만 저장할까요? 필터로 가려진 수정 내용도 포함됩니다.")) return;
+  const key = type === "work" ? "entries" : "materialOrders";
+  const changedMap = new Map(changed.map((entry) => [entry.id, entry]));
+  state[key] = state[key].map((entry) => (entry.project === getActiveProjectName() && changedMap.get(entry.id)) || entry);
+  state.sheetEdits[getActiveProjectName()][type] = {};
+  if (type === "work") logSheetEditMode = false;
+  else materialSheetEditMode = false;
+  saveState();
+  renderAll();
+  if (!changed.length) return;
+  if (type === "work") savingWork = true;
+  else savingMaterial = true;
+  try {
+    if (type === "work") await syncWorkRowsWithOverlay(changed, "수정한 업무를 저장하는 중입니다");
+    else await syncMaterialRowsWithOverlay(changed, "수정한 자재를 저장하는 중입니다");
+  } finally {
+    savingWork = false;
+    savingMaterial = false;
+  }
 }
 
 async function saveInlineEntry(row) {
@@ -1590,72 +1929,15 @@ function startLogSheetEditMode() {
 }
 
 function cancelLogSheetEditMode() {
+  if (Object.keys(sheetEdits("work")).length && !window.confirm("저장하지 않은 업무 수정 내용을 취소할까요?")) return;
+  state.sheetEdits[getActiveProjectName()].work = {};
   logSheetEditMode = false;
+  saveState();
   renderLogs();
   renderEditState();
 }
 
-async function saveLogSheetEdits() {
-  const rows = Array.from(elements.logTableBody.querySelectorAll("[data-sheet-entry][data-dirty='true']"));
-  if (!rows.length) {
-    logSheetEditMode = false;
-    renderLogs();
-    renderEditState();
-    window.alert("변경된 내용이 없습니다.");
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const status = getSyncEndpoint() ? "sending" : "local";
-  const changedEntries = [];
-
-  for (const row of rows) {
-    const id = row.dataset.sheetEntry;
-    const original = state.entries.find((entry) => entry.id === id);
-    if (!original) continue;
-    const value = (field) => row.querySelector(`[data-field='${field}']`)?.value || "";
-    const updated = {
-      ...original,
-      date: value("date") || isoToday,
-      mainProcess: value("mainProcess"),
-      subProcess: value("subProcess"),
-      detailProcess: value("detailProcess").trim(),
-      equipment: value("equipment"),
-      labor: value("labor"),
-      workAmount: numberOrBlank(value("workAmount")),
-      costType: value("costType"),
-      cost: numberOrBlank(value("cost")),
-      paymentStatus: value("paymentStatus"),
-      memo: value("memo").trim(),
-      updatedAt: now,
-      status
-    };
-
-    if (!updated.date || !updated.mainProcess || !updated.subProcess) {
-      window.alert("날짜, 주공정, 부공정은 비울 수 없습니다.");
-      return;
-    }
-    if (workSyncKey(updated) !== workSyncKey(original)) {
-      changedEntries.push(updated);
-    }
-  }
-
-  if (!changedEntries.length) {
-    logSheetEditMode = false;
-    renderLogs();
-    renderEditState();
-    window.alert("변경된 내용이 없습니다.");
-    return;
-  }
-
-  const changedMap = new Map(changedEntries.map((entry) => [entry.id, entry]));
-  state.entries = state.entries.map((entry) => changedMap.get(entry.id) || entry);
-  logSheetEditMode = false;
-  saveState();
-  renderAll();
-
-  await syncWorkRowsWithOverlay(changedEntries, "업무현황 수정 내용을 동기화하는 중입니다");
-}
+async function saveLogSheetEdits() { return saveSheetEdits("work"); }
 
 async function splitEquipmentCost(id) {
   const original = state.entries.find((entry) => entry.id === id);
@@ -1799,6 +2081,8 @@ async function commitMaterialOrder() {
     updatedAt: editId ? new Date().toISOString() : ""
   };
 
+  try { validateMaterialAmounts(order); } catch (error) { window.alert(error.message); return; }
+
   if (!order.process || !order.product) {
     window.alert("공정과 제품명을 입력해주세요.");
     return;
@@ -1816,7 +2100,7 @@ async function commitMaterialOrder() {
 
   if (getSyncEndpoint()) {
     const sent = await syncPayload("materialOrders", [order]);
-    state.materialOrders = state.materialOrders.map((item) => item.id === order.id ? { ...item, status: sent ? "sent" : "failed" } : item);
+    updateMaterialSyncStatus([order], sent ? "sent" : "failed");
     if (sent) state.lastSync = new Date().toISOString();
     saveState();
     if (sent) await syncSharedBackup();
@@ -1844,14 +2128,9 @@ function clearMaterialForm() {
 }
 
 function beginMaterialEdit(id) {
-  const order = state.materialOrders.find((item) => item.id === id);
-  if (!order) return;
-  materialSheetEditMode = false;
-  state.editingMaterialId = id;
-  state.editingEntryId = "";
-  saveState();
-  renderMaterialTable();
-  renderEditState();
+  startMaterialSheetEditMode();
+  const row = Array.from(elements.materialTableBody.querySelectorAll("[data-sheet-material]")).find((item) => item.dataset.sheetMaterial === id);
+  row?.querySelector("[data-field='product']")?.focus({ preventScroll: true });
 }
 
 function cancelMaterialEdit() {
@@ -1897,7 +2176,7 @@ async function saveInlineMaterial(row) {
 
   if (getSyncEndpoint()) {
     const sent = await syncPayload("materialOrders", [updated]);
-    state.materialOrders = state.materialOrders.map((order) => order.id === updated.id ? { ...order, status: sent ? "sent" : "failed" } : order);
+    updateMaterialSyncStatus([updated], sent ? "sent" : "failed");
     if (sent) state.lastSync = new Date().toISOString();
     saveState();
     if (sent) await syncSharedBackup();
@@ -1922,71 +2201,15 @@ function startMaterialSheetEditMode() {
 }
 
 function cancelMaterialSheetEditMode() {
+  if (Object.keys(sheetEdits("material")).length && !window.confirm("저장하지 않은 자재 수정 내용을 취소할까요?")) return;
+  state.sheetEdits[getActiveProjectName()].material = {};
   materialSheetEditMode = false;
+  saveState();
   renderMaterialTable();
   renderEditState();
 }
 
-async function saveMaterialSheetEdits() {
-  const rows = Array.from(elements.materialTableBody.querySelectorAll("[data-sheet-material][data-dirty='true']"));
-  if (!rows.length) {
-    materialSheetEditMode = false;
-    renderMaterialTable();
-    renderEditState();
-    window.alert("변경된 내용이 없습니다.");
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const status = getSyncEndpoint() ? "sending" : "local";
-  const changedOrders = [];
-
-  for (const row of rows) {
-    const id = row.dataset.sheetMaterial;
-    const original = state.materialOrders.find((order) => order.id === id);
-    if (!original) continue;
-    const value = (field) => row.querySelector(`[data-field='${field}']`)?.value || "";
-    const updated = {
-      ...original,
-      date: value("date") || isoToday,
-      process: value("process"),
-      product: value("product").trim(),
-      vendor: value("vendor").trim(),
-      area: value("area").trim(),
-      orderAmount: numberOrBlank(value("orderAmount")),
-      lowPrice: numberOrBlank(value("lowPrice")),
-      highPrice: numberOrBlank(value("highPrice")),
-      memo: value("memo").trim(),
-      creditAmount: numberOrBlank(value("creditAmount")),
-      updatedAt: now,
-      status
-    };
-
-    if (!updated.process || !updated.product) {
-      window.alert("공정과 제품명은 비울 수 없습니다.");
-      return;
-    }
-    if (materialContentKey(updated) !== materialContentKey(original)) {
-      changedOrders.push(updated);
-    }
-  }
-
-  if (!changedOrders.length) {
-    materialSheetEditMode = false;
-    renderMaterialTable();
-    renderEditState();
-    window.alert("변경된 내용이 없습니다.");
-    return;
-  }
-
-  const changedMap = new Map(changedOrders.map((order) => [order.id, order]));
-  state.materialOrders = state.materialOrders.map((order) => changedMap.get(order.id) || order);
-  materialSheetEditMode = false;
-  saveState();
-  renderAll();
-
-  await syncMaterialRowsWithOverlay(changedOrders, "자재현황 수정 내용을 동기화하는 중입니다");
-}
+async function saveMaterialSheetEdits() { return saveSheetEdits("material"); }
 
 async function applyMaterialBulkEdit() {
   if (state.editingMaterialId) {
@@ -2065,7 +2288,7 @@ function renderEditState() {
   elements.entrySubmitButton.textContent = editingEntry ? "수정 저장" : "업무현황 저장";
   elements.logEditBar.classList.toggle("hidden", !editingLogTable);
   elements.logEditBar.querySelector("strong").textContent = logSheetEditMode ? "업무현황 표 수정모드" : "업무현황 수정 중";
-  elements.logEditBar.querySelector("span").textContent = logSheetEditMode ? "원하는 셀을 바로 고친 뒤 완료를 누르세요." : "표 안의 값을 고친 뒤 저장하세요.";
+  elements.logEditBar.querySelector("span").textContent = logSheetEditMode ? "수정 임시보관 " + Object.keys(sheetEdits("work")).length + "건 · 필터를 바꿔도 유지됩니다. 완료를 눌러 저장하세요." : "표 안의 값을 고친 뒤 저장하세요.";
   elements.logInlineSaveButton.textContent = logSheetEditMode ? "완료" : "수정 저장";
   elements.logInlineCancelButton.textContent = logSheetEditMode ? "수정모드 취소" : "취소";
   if (elements.toggleLogSheetEditButton) {
@@ -2077,7 +2300,7 @@ function renderEditState() {
   elements.materialSubmitButton.textContent = editingMaterial ? "수정 저장" : "자재현황 저장";
   elements.materialEditBar.classList.toggle("hidden", !editingMaterialTable);
   elements.materialEditBar.querySelector("strong").textContent = materialSheetEditMode ? "자재현황 표 수정모드" : "자재현황 수정 중";
-  elements.materialEditBar.querySelector("span").textContent = materialSheetEditMode ? "원하는 셀을 바로 고친 뒤 완료를 누르세요." : "표 안의 값을 고친 뒤 저장하세요.";
+  elements.materialEditBar.querySelector("span").textContent = materialSheetEditMode ? "수정 임시보관 " + Object.keys(sheetEdits("material")).length + "건 · 필터를 바꿔도 유지됩니다. 완료를 눌러 저장하세요." : "표 안의 값을 고친 뒤 저장하세요.";
   elements.materialInlineSaveButton.textContent = materialSheetEditMode ? "완료" : "수정 저장";
   elements.materialInlineCancelButton.textContent = materialSheetEditMode ? "수정모드 취소" : "취소";
   if (elements.toggleMaterialSheetEditButton) {
@@ -2166,10 +2389,12 @@ function renderMaterialTable() {
 
   rows.forEach((order) => {
     const tr = document.createElement("tr");
+    tr.dataset.recordId = order.id;
     if (materialSheetEditMode) {
       tr.dataset.sheetMaterial = order.id;
       tr.className = "sheet-edit-row";
       tr.innerHTML = renderMaterialSheetEditRow(order);
+      applySheetDraftToRow(tr, order, "material");
       elements.materialTableBody.append(tr);
       return;
     }
@@ -2293,16 +2518,16 @@ function renderMaterialEditRow(order) {
 function renderMaterialSheetEditRow(order) {
   const mainOptions = state.config.processes.map((process) => process.name);
   return `
-    <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(order.date || "")}"></td>
-    <td><select class="inline-cell sheet-cell" data-field="process">${optionsHtml(mainOptions, order.process)}</select></td>
-    <td><input class="inline-cell sheet-cell" data-field="product" type="text" value="${escapeAttr(order.product || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="vendor" type="text" value="${escapeAttr(order.vendor || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="area" type="text" value="${escapeAttr(order.area || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="orderAmount" type="number" min="0" step="1" value="${escapeAttr(order.orderAmount || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="lowPrice" type="number" min="0" step="1" value="${escapeAttr(order.lowPrice || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="highPrice" type="number" min="0" step="1" value="${escapeAttr(order.highPrice || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="memo" type="text" value="${escapeAttr(order.memo || "")}"></td>
-    <td><input class="inline-cell sheet-cell" data-field="creditAmount" type="number" min="0" step="1" value="${escapeAttr(order.creditAmount || "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="date" type="date" value="${escapeAttr(order.date ?? "")}"></td>
+    <td><select class="inline-cell sheet-cell" data-field="process">${optionsHtml(["", ...mainOptions], order.process)}</select></td>
+    <td><input class="inline-cell sheet-cell" data-field="product" type="text" value="${escapeAttr(order.product ?? "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="vendor" type="text" value="${escapeAttr(order.vendor ?? "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="area" type="text" value="${escapeAttr(order.area ?? "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="orderAmount" type="number" min="0" step="1" value="${escapeAttr(order.orderAmount ?? "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="lowPrice" type="number" min="0" step="1" value="${escapeAttr(order.lowPrice ?? "")}"></td>
+    <td><input class="inline-cell sheet-cell" data-field="highPrice" type="number" min="0" step="1" value="${escapeAttr(order.highPrice ?? "")}"></td>
+    <td><textarea class="inline-cell sheet-cell inline-multiline-cell" data-field="memo" rows="2">${escapeHtml(order.memo ?? "")}</textarea></td>
+    <td><input class="inline-cell sheet-cell" data-field="creditAmount" type="number" min="0" step="1" value="${escapeAttr(order.creditAmount ?? "")}"></td>
     <td>${statusDotHtml("sending", "수정중")}</td>
     <td><span class="sheet-edit-hint">수정중</span></td>
   `;
@@ -2318,7 +2543,7 @@ function renderSummary() {
     { label: "총공사비", value: formatMoney(totals.totalCost), tone: "total" },
     { label: "현지출액", value: formatMoney(totals.paidAmount), tone: "spent" },
     { label: "외상", value: formatMoney(totals.credit), tone: "credit" },
-    ...projectExtraSummaryItems().map((item) => ({
+    ...filteredExtraSummaryItems().map((item) => ({
       label: item.name,
       value: formatMoney(item.amount),
       tone: item.type === "credit" ? "credit" : "spent"
@@ -2327,7 +2552,8 @@ function renderSummary() {
   ];
   const metaStats = [
     { label: "공사 시작일", value: formatDate(operationStats.startDate) },
-    { label: "작업일", value: `${operationStats.workDays}일` },
+    { label: "누적 작업일", value: `${operationStats.workDays}일` },
+    { label: "조회기간 작업일", value: `${operationStats.periodWorkDays}일` },
     { label: "경과일", value: `${operationStats.elapsedDays}일` },
     { label: "업무 기록", value: `${workRows.length}건` },
     { label: "자재 기록", value: `${materialRows.length}건` }
@@ -2340,6 +2566,20 @@ function renderSummary() {
     const el = document.createElement("article");
     el.className = `absolute-stat ${card.tone ? `stat-${card.tone}` : ""}`;
     el.innerHTML = `<span>${escapeHtml(card.label)}</span><strong>${escapeHtml(card.value)}</strong>`;
+    if (["total", "spent", "credit"].includes(card.tone)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ledger-open-button";
+      button.textContent = "계산 근거 보기";
+      button.addEventListener("click", () => {
+        document.querySelector("#ledgerCategory").value = "";
+        document.querySelector("#ledgerPayment").value = card.tone === "spent" ? "paid" : card.tone === "credit" ? "credit" : "";
+        elements.summaryLedger.open = true;
+        renderSummaryLedger();
+        elements.summaryLedger.scrollIntoView({ block: "nearest" });
+      });
+      el.append(button);
+    }
     moneyWrap.append(el);
   });
   const metaWrap = document.createElement("aside");
@@ -2361,6 +2601,8 @@ function renderSummary() {
 
   renderSummaryChart(workRows, materialRows, totals);
   renderSummaryExtraList();
+  renderSummaryLedger();
+  elements.constructionStartDate.value = getProjectStartDate();
 }
 
 function renderSummaryChart(workRows, materialRows, totals) {
@@ -2380,11 +2622,12 @@ function renderSummaryChart(workRows, materialRows, totals) {
     });
     if (selectedRow) {
       const breakdown = selectedRow.process === "추가 항목"
-        ? projectExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) }))
+        ? filteredExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) }))
         : [
             { name: "자재비", value: selectedRow.material },
             { name: "인건비", value: selectedRow.labor },
-            { name: "장비대", value: selectedRow.equipment }
+            { name: "장비대", value: selectedRow.equipment },
+            { name: "기타·미분류", value: selectedRow.other || 0 }
           ];
       renderPieChart(elements.summaryChart, breakdown);
     } else {
@@ -2398,7 +2641,8 @@ function renderSummaryChart(workRows, materialRows, totals) {
       { key: "material", name: "자재비" },
       { key: "labor", name: "인건비" },
       { key: "equipment", name: "장비대" },
-      ...projectExtraSummaryItems().map((item) => ({ key: `extra:${item.id}`, name: item.name })),
+      { key: "other", name: "기타·미분류" },
+      ...filteredExtraSummaryItems().map((item) => ({ key: `extra:${item.id}`, name: item.name })),
       { key: "credit", name: "외상" }
     ];
     const selected = state.summaryFocus.category || categories[0].key;
@@ -2424,7 +2668,8 @@ function renderSummaryChart(workRows, materialRows, totals) {
         { name: "인건비", value: totals.laborCost },
         { name: "자재비", value: totals.materialCost },
         { name: "장비대", value: totals.equipmentCost },
-        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) }))
+        { name: "기타·미분류", value: totals.otherCost },
+        ...filteredExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) }))
       ]
     },
     category: {
@@ -2435,7 +2680,8 @@ function renderSummaryChart(workRows, materialRows, totals) {
         { name: "인건비", value: totals.laborCost },
         { name: "자재비", value: totals.materialCost },
         { name: "장비대", value: totals.equipmentCost },
-        ...projectExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) })),
+        { name: "기타·미분류", value: totals.otherCost },
+        ...filteredExtraSummaryItems().map((item) => ({ name: item.name, value: amountOf(item.amount) })),
         { name: "외상", value: totals.credit }
       ]
     },
@@ -2497,7 +2743,7 @@ function renderDrillButtons(container, values, selected, onSelect) {
 
 function buildCategoryBreakdownRows(category, workRows, materialRows) {
   if (category.startsWith("extra:")) {
-    const item = projectExtraSummaryItems().find((entry) => `extra:${entry.id}` === category);
+    const item = filteredExtraSummaryItems().find((entry) => `extra:${entry.id}` === category);
     return item ? [{ name: item.name, value: amountOf(item.amount) }] : [];
   }
 
@@ -2517,7 +2763,7 @@ function buildCategoryBreakdownRows(category, workRows, materialRows) {
       merged.set(row.name, amountOf(merged.get(row.name)) + amountOf(row.value));
     });
     const rows = Array.from(merged, ([name, value]) => ({ name, value }));
-    const extras = projectExtraSummaryItems()
+    const extras = filteredExtraSummaryItems()
       .filter((item) => item.type === "credit")
       .map((item) => ({ name: item.name, value: amountOf(item.amount) }));
     return [...rows, ...extras];
@@ -2530,6 +2776,7 @@ function buildCategoryBreakdownRows(category, workRows, materialRows) {
     if (category === "material") value = sum(material.map((row) => amountOf(row.orderAmount)));
     if (category === "labor") value = sum(work.filter((row) => row.costType === "인건비").map((row) => amountOf(row.cost)));
     if (category === "equipment") value = sum(work.filter((row) => row.costType === "장비대").map((row) => amountOf(row.cost)));
+    if (category === "other") value = sum(work.filter((row) => !["인건비", "장비대"].includes(row.costType)).map((row) => amountOf(row.cost)));
     return { name: processName, value };
   });
 }
@@ -2689,13 +2936,14 @@ function buildProcessCostRows(workRows, materialRows) {
     const equipmentCost = sum(work.filter((row) => row.costType === "장비대").map((row) => amountOf(row.cost)));
     return {
       process: processName,
-      total: materialCost + laborCost + equipmentCost,
+      total: materialCost + sum(work.map((row) => amountOf(row.cost))),
+      other: sum(work.filter((row) => !["인건비", "장비대"].includes(row.costType)).map((row) => amountOf(row.cost))),
       material: materialCost,
       labor: laborCost,
       equipment: equipmentCost
     };
   });
-  const extraCost = sum(projectExtraSummaryItems().map((item) => amountOf(item.amount)));
+  const extraCost = sum(filteredExtraSummaryItems().map((item) => amountOf(item.amount)));
   if (extraCost > 0) {
     rows.push({ process: "추가 항목", total: extraCost, material: 0, labor: 0, equipment: 0 });
   }
@@ -2720,6 +2968,8 @@ function buildPaymentRows(workRows, materialRows, totals = calculateTotals(workR
     { name: "자재비 외상금액", value: totals.materialCredit },
     { name: "장비대 결제금액", value: totals.equipmentPaid },
     { name: "장비대 외상금액", value: totals.equipmentCredit },
+    { name: "기타·미분류 결제금액", value: totals.otherPaid },
+    { name: "기타·미분류 외상금액", value: totals.otherCredit },
     { name: "추가항목 결제금액", value: totals.extraPaid },
     { name: "추가항목 외상금액", value: totals.extraCredit }
   ].filter((row) => amountOf(row.value) > 0);
@@ -2813,11 +3063,11 @@ function removeProject(name) {
 function addSummaryExtraItem() {
   const name = elements.summaryExtraName.value.trim();
   const amount = numberOrBlank(elements.summaryExtraAmount.value);
-  if (!name || !amount) {
+  if (!name || amount === "" || amount < 0 || !elements.summaryExtraDate.value) {
     window.alert("추가 항목명과 금액을 입력해주세요.");
     return;
   }
-  state.extraSummaryItems.push({ id: cryptoId(), project: getActiveProjectName(), name, amount, type: elements.summaryExtraType.value || "spent" });
+  state.extraSummaryItems.push({ id: cryptoId(), project: getActiveProjectName(), name, amount, date: elements.summaryExtraDate.value, type: elements.summaryExtraType.value || "spent" });
   elements.summaryExtraName.value = "";
   elements.summaryExtraAmount.value = "";
   elements.summaryExtraType.value = "spent";
@@ -2830,19 +3080,118 @@ function addSummaryExtraItem() {
 function renderSummaryExtraList() {
   elements.summaryExtraList.innerHTML = "";
   projectExtraSummaryItems().forEach((item) => {
-    const button = document.createElement("button");
-    button.className = "extra-chip";
-    button.type = "button";
-    button.innerHTML = `${escapeHtml(item.name)} <small>${item.type === "credit" ? "외상" : "현지출액"}</small> <strong>${formatMoney(item.amount)}</strong> <span>X</span>`;
-    button.addEventListener("click", () => {
+    const chip = document.createElement("div");
+    chip.className = "extra-chip";
+    const label = document.createElement("span");
+    label.textContent = item.name + " · " + (item.type === "credit" ? "외상 " : "지급 ") + formatMoney(item.amount);
+    const date = document.createElement("input");
+    date.type = "date";
+    date.value = item.date || "";
+    date.setAttribute("aria-label", item.name + " 발생일");
+    date.addEventListener("change", () => {
+      item.date = date.value;
+      saveState();
+      renderSummary();
+      queueSharedBackup();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "삭제";
+    remove.addEventListener("click", () => {
+      if (!window.confirm(item.name + " 추가항목을 삭제할까요?")) return;
       state.extraSummaryItems = state.extraSummaryItems.filter((entry) => entry.id !== item.id);
       saveState();
       renderSummary();
       renderMetrics();
       queueSharedBackup();
     });
-    elements.summaryExtraList.append(button);
+    chip.append(label, date, remove);
+    elements.summaryExtraList.append(chip);
   });
+}
+
+function summaryLedgerRows(workRows, materialRows, extras) {
+  const moneyIssues = (row, fields) => fields.some((field) => !Number.isFinite(parseAmount(row[field])) || parseAmount(row[field]) < 0) ? ["금액 형식 또는 음수 확인"] : [];
+  return [
+    ...workRows.map((row) => {
+      const knownCategory = ["인건비", "장비대"].includes(row.costType);
+      const issues = moneyIssues(row, ["cost"]);
+      if (!knownCategory) issues.push("비용 분류 확인");
+      if (!isPaidPaymentStatus(row.paymentStatus) && !["외상", "미지급", "미결제"].includes(String(row.paymentStatus || "").trim())) issues.push("결제 상태 확인 (임시 외상 집계)");
+      if (!row.date) issues.push("날짜 미입력");
+      return { type: "work", id: row.id, date: row.date, category: knownCategory ? row.costType : "기타·미분류", name: row.detailProcess || row.labor || row.equipment || row.mainProcess, total: amountOf(row.cost), paid: workPaidAmount(row), credit: workCreditAmount(row), issues };
+    }),
+    ...materialRows.map((row) => {
+      const issues = moneyIssues(row, ["orderAmount", "creditAmount"]);
+      if (amountOf(row.creditAmount) > amountOf(row.orderAmount)) issues.push("외상이 발주금액보다 큼");
+      if (!row.date) issues.push("날짜 미입력");
+      return { type: "material", id: row.id, date: row.date, category: "자재비", name: row.product + (row.vendor ? " · " + row.vendor : ""), total: amountOf(row.orderAmount), paid: Math.max(0, amountOf(row.orderAmount) - materialCreditAmount(row)), credit: materialCreditAmount(row), issues };
+    }),
+    ...extras.map((row) => ({ type: "extra", id: row.id, date: row.date, category: "추가항목", name: row.name, total: amountOf(row.amount), paid: row.type === "credit" ? 0 : amountOf(row.amount), credit: row.type === "credit" ? amountOf(row.amount) : 0, issues: [...moneyIssues(row, ["amount"]), ...(row.date ? [] : ["발생일을 설정해주세요"])] }))
+  ];
+}
+
+function renderSummaryLedger() {
+  const work = filteredWorkRows();
+  const materials = filteredMaterialRows();
+  const extras = filteredExtraSummaryItems();
+  const all = summaryLedgerRows(work, materials, extras);
+  const totals = calculateTotals(work, materials, extras);
+  const undated = [...projectEntries(), ...projectMaterialOrders(), ...projectExtraSummaryItems()].filter((row) => !row.date).length;
+  const issues = all.filter((row) => row.issues.length).length;
+  const hasRange = Boolean(elements.summaryStart.value || elements.summaryEnd.value);
+  elements.summaryAudit.textContent = (issues || totals.difference
+    ? "확인 필요 " + issues + "건 · 총공사비와 지급액+외상 차이 " + formatMoney(totals.difference) + ". 아래 계산 근거를 확인해주세요."
+    : "합계 일치 · 총공사비 = 지급액 + 외상. 아래에서 원본 항목을 확인할 수 있습니다.")
+    + (undated && hasRange ? " 날짜 없는 " + undated + "건은 기간 집계에서 제외했습니다. 날짜를 입력하거나 조회 시작·종료일을 모두 비워 전체를 확인하세요." : "");
+  elements.summaryAudit.classList.toggle("has-issues", Boolean(issues || totals.difference || (undated && hasRange)));
+  const category = document.querySelector("#ledgerCategory").value;
+  const payment = document.querySelector("#ledgerPayment").value;
+  const rows = all.filter((row) => (!category || row.category === category) && (!payment || (payment === "paid" ? row.paid > 0 : payment === "credit" ? row.credit > 0 : row.issues.length)));
+  const body = document.querySelector("#ledgerBody");
+  body.replaceChildren();
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    for (const value of [formatDate(row.date), row.category, row.name || "-", formatMoney(row.total), formatMoney(row.paid), formatMoney(row.credit), row.issues.join(" · ") || "-"]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      tr.append(cell);
+    }
+    const cell = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-btn";
+    button.textContent = "확인";
+    button.addEventListener("click", () => openLedgerSource(row));
+    cell.append(button);
+    tr.append(cell);
+    body.append(tr);
+  });
+  const total = document.querySelector("#ledgerTotal");
+  total.replaceChildren();
+  const tr = document.createElement("tr");
+  for (const value of ["표시 " + rows.length + "건", "", "합계", formatMoney(sum(rows.map((row) => row.total))), formatMoney(sum(rows.map((row) => row.paid))), formatMoney(sum(rows.map((row) => row.credit))), "", ""]) {
+    const cell = document.createElement("td");
+    cell.textContent = value;
+    tr.append(cell);
+  }
+  total.append(tr);
+}
+
+function openLedgerSource(row) {
+  if (row.type === "extra") {
+    elements.summaryExtraList.scrollIntoView({ block: "center" });
+    return;
+  }
+  const work = row.type === "work";
+  (work ? elements.clearLogFilters : elements.clearMaterialFilters).click();
+  setView(work ? "logs" : "materials");
+  const body = work ? elements.logTableBody : elements.materialTableBody;
+  const target = Array.from(body.querySelectorAll("[data-record-id]")).find((tr) => tr.dataset.recordId === row.id);
+  if (target) {
+    target.classList.add("ledger-source-highlight");
+    target.scrollIntoView({ block: "center" });
+  }
 }
 
 function renderProcessSettings() {
@@ -3049,21 +3398,50 @@ function settingTypeLabel(type) {
 function renderSyncState() {
   const endpoint = getSyncEndpoint();
   elements.syncEndpoint.value = endpoint;
-  if (endpoint) {
-    elements.syncState.textContent = state.lastSync ? `연결됨 ${formatDateTime(state.lastSync)}` : "연결됨";
-    elements.syncState.classList.remove("muted");
-  } else {
-    elements.syncState.textContent = "로컬 저장";
-    elements.syncState.classList.add("muted");
-  }
+  const rows = pendingRecords();
+  const conflicts = rows.filter((row) => row.status === "conflict").length;
+  const sharedPending = Boolean(state.pendingShared[getActiveProjectName()]);
+  elements.syncState.textContent = rows.length || sharedPending ? "기기 보관 " + rows.length + "건 · 시트 저장 확인 필요" : (endpoint ? (state.lastSync ? "마지막 확인 " + formatDateTime(state.lastSync) : "연결됨") : "로컬 저장");
+  elements.syncState.classList.toggle("muted", !endpoint);
+  if (!elements.syncNotice) return;
+  elements.syncNotice.classList.toggle("hidden", rows.length === 0 && !sharedPending);
+  elements.syncNotice.querySelector("[data-sync-message]").textContent = retryingPending
+    ? "미전송 기록을 다시 저장하는 중입니다."
+    : "이 기기에 미전송 " + rows.length + "건" + (sharedPending ? " 및 설정 변경" : "") + "을 보관하고 있습니다." + (conflicts ? " 그중 " + conflicts + "건은 시트와 달라 자동 전송을 멈췄습니다." : " 연결되면 다시 전송합니다.");
+  document.querySelector("#retryPendingButton").disabled = retryingPending || syncInFlight > 0;
+  const conflictsView = elements.syncNotice.querySelector("[data-sync-conflicts]");
+  conflictsView.replaceChildren();
+  renderSyncConflicts(conflictsView);
 }
 
 async function syncPayload(type, records, extra = {}) {
   const endpoint = getSyncEndpoint();
   const accessKey = getAccessKey();
   if (!endpoint || !accessKey) return false;
+  if (navigator.onLine === false) return false;
+  syncInFlight += 1;
   try {
+    if (["workEntries", "materialOrders"].includes(type)) {
+      const before = await loadSheetBackupJsonp(accessKey);
+      const field = type === "workEntries" ? "entries" : "materialOrders";
+      const kind = type === "workEntries" ? "work" : "material";
+      const remoteRows = type === "workEntries" ? before.workEntries : before.materialOrders;
+      if (!Array.isArray(remoteRows) || before.scriptVersion !== REQUIRED_SCRIPT_VERSION) return false;
+      const key = kind === "work" ? workSyncKey : materialContentKey;
+      const remote = new Map(remoteRows.map((row) => [row.id, row]));
+      const blocked = records.filter((row) => {
+        const server = remote.get(row.id);
+        return isDeletedRecord(kind, row) || (server ? key(server) !== key(row) && key(server) !== row._syncBase : Boolean(row._syncBase));
+      });
+      if (blocked.length) {
+        state[field] = state[field].map((row) => row.project === getActiveProjectName() && blocked.some((item) => item.id === row.id) ? { ...row, status: "conflict", _remoteConflict: remote.get(row.id) || null } : row);
+        saveState();
+        return false;
+      }
+      if (records.every((row) => remote.has(row.id) && key(remote.get(row.id)) === key(row))) return true;
+    }
     await fetch(endpoint, {
+      signal: AbortSignal.timeout(20000),
       method: "POST",
       mode: "no-cors",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -3072,15 +3450,18 @@ async function syncPayload(type, records, extra = {}) {
         project: getActiveProjectName(),
         accessKey,
         type,
-        records,
+        records: records.map((row) => Object.fromEntries(Object.entries(row).filter(([field]) => !field.startsWith("_")))),
         ...extra
       })
     });
-    if (!["workEntries", "materialOrders", "deleteWorkEntries", "deleteMaterialOrders", "replaceProjectData"].includes(type)) {
-      return true;
-    }
+    if (type === "summarySnapshot") return true;
+    if (!["appState", "workEntries", "materialOrders", "deleteWorkEntries", "deleteMaterialOrders", "replaceProjectData"].includes(type)) return false;
     await wait(700);
     const backup = await loadSheetBackupJsonp(accessKey);
+    if (backup.scriptVersion !== REQUIRED_SCRIPT_VERSION) return false;
+    if (type === "appState") {
+      return ["config", "extraSummaryItems", "deletedRecords", "projectSettings"].every((field) => stableJson(backup.stateData?.[field]) === stableJson(extra.stateData?.[field]));
+    }
     if (type === "workEntries") {
       const remote = new Map((backup.workEntries || []).map((record) => [record.id, record]));
       return records.every((record) => remote.has(record.id) && workSyncKey(remote.get(record.id)) === workSyncKey(record));
@@ -3103,77 +3484,63 @@ async function syncPayload(type, records, extra = {}) {
       && (extra.materialOrders || []).every((record) => remoteMaterials.has(record.id) && materialContentKey(remoteMaterials.get(record.id)) === materialContentKey(record));
   } catch {
     return false;
+  } finally {
+    syncInFlight -= 1;
   }
 }
 
 async function syncSharedBackup() {
   if (!getSyncEndpoint()) return false;
-  const appStateOk = await syncPayload("appState", [], { stateData: buildSharedStatePayload() });
-  const summaryOk = await syncPayload("summarySnapshot", buildSummarySnapshotRows());
-  return appStateOk && summaryOk;
+  if (sharedBackupTask) return sharedBackupTask;
+  const projectName = getActiveProjectName();
+  if (!state.pendingShared[projectName]) state.pendingShared[projectName] = buildSharedStatePayload();
+  sharedBackupTask = (async () => {
+    try {
+      while (state.pendingShared[projectName]) {
+        const stateData = state.pendingShared[projectName];
+        saveState();
+        const ok = await syncPayload("appState", [], { stateData });
+        if (!ok) return false;
+        if (state.pendingShared[projectName] === stateData) {
+          delete state.pendingShared[projectName];
+          saveState();
+        }
+      }
+      await syncPayload("summarySnapshot", buildSummarySnapshotRows());
+      return true;
+    } finally {
+      sharedBackupTask = null;
+      renderSyncState();
+    }
+  })();
+  return sharedBackupTask;
 }
 
 function queueSharedBackup() {
-  if (!getSyncEndpoint()) return;
-  syncSharedBackup().then((ok) => {
-    if (!ok) return;
-    state.lastSync = new Date().toISOString();
-    saveState();
-    renderSyncState();
-  });
+  const project = getActiveProjectName();
+  state.pendingShared[project] = buildSharedStatePayload();
+  saveState();
+  renderSyncState();
+  if (syncInFlight || retryingPending || !getAccessKey()) return;
+  syncSharedBackup().catch(() => renderSyncState());
 }
 
 async function syncCurrentProjectSnapshot() {
-  const projectName = getActiveProjectName();
-  dedupeProjectState(projectName);
-  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName);
-  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName);
-  return syncPayload("replaceProjectData", [], {
-    workEntries: workRows,
-    materialOrders: materialRows,
-    summaryRows: buildSummarySnapshotRows(),
-    stateData: buildSharedStatePayload()
-  });
+  return retryPendingRecords();
 }
 
 async function pushCurrentProjectToGoogleSheet() {
-  if (syncingAll) return;
-  if (!getSyncEndpoint()) {
-    window.alert("환경설정에서 현재 프로젝트의 Apps Script 웹앱 URL을 먼저 저장해주세요.");
-    setView("settings");
+  if (syncInFlight || retryingPending || savingWork || savingMaterial) return;
+  if (!getAccessKey()) {
+    window.alert("프로젝트 비밀번호로 먼저 접속해주세요.");
     return;
   }
-
-  const confirmed = window.confirm("현재 앱에 저장된 선택 프로젝트 데이터를 기준으로 구글시트를 정리해서 보낼까요? 다른 사람이 같은 시트에 방금 입력한 내용은 먼저 구글시트 불러오기를 한 뒤 보내는 것이 안전합니다.");
-  if (!confirmed) return;
-
-  syncingAll = true;
-
-  const projectName = getActiveProjectName();
-  dedupeProjectState(projectName);
-  setManualSyncBusy(true);
-
-  const workRows = state.entries.filter((entry) => (entry.project || "제천2덕동골") === projectName);
-  const materialRows = state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") === projectName);
-  const pushed = await syncCurrentProjectSnapshot();
-  const verified = pushed ? await verifyDeletedRecordsCleared() : false;
-
-  state.entries = state.entries.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
-  state.materialOrders = state.materialOrders.map((entry) => (entry.project || "제천2덕동골") === projectName ? { ...entry, status: pushed ? "sent" : "failed" } : entry);
-  if (pushed) state.lastSync = new Date().toISOString();
-  saveState();
-  renderAll();
-
-  setManualSyncBusy(false);
-  syncingAll = false;
-  window.alert(pushed && verified
-    ? `현재 앱 데이터 ${workRows.length + materialRows.length}건을 구글시트로 보냈습니다.`
-    : "요청은 보냈지만 구글시트 확인이 끝나지 않았습니다. 삭제 항목이 계속 보이면 Apps Script 최신 코드 배포를 확인해주세요.");
+  // Send only unacknowledged records. A stale browser must never replace the entire sheet.
+  const ok = await retryPendingRecords();
+  window.alert(ok ? "미전송 기록의 시트 저장을 확인했습니다." : "미전송 또는 충돌 기록이 남아 있습니다. 상단 안내에서 확인해주세요.");
 }
 
-async function syncAllPending() {
-  return pushCurrentProjectToGoogleSheet();
-}
+async function syncAllPending() { return retryPendingRecords(); }
 
 function setManualSyncBusy(isBusy) {
   [
@@ -3189,6 +3556,7 @@ function setManualSyncBusy(isBusy) {
 function buildSharedStatePayload() {
   return {
     project: getActiveProjectName(),
+    projectSettings: { constructionStartDate: getActiveProject().constructionStartDate || "" },
     savedAt: new Date().toISOString(),
     projects: state.projects,
     config: state.config,
@@ -3211,7 +3579,7 @@ function buildSummarySnapshotRows() {
     { group: "총괄", name: "총공사비", value: totals.totalCost, type: "금액" },
     { group: "총괄", name: "현지출액", value: totals.paidAmount, type: "금액" },
     { group: "총괄", name: "외상", value: totals.credit, type: "금액" },
-    ...projectExtraSummaryItems().map((item) => ({
+    ...filteredExtraSummaryItems().map((item) => ({
       group: "추가항목",
       name: item.name,
       value: amountOf(item.amount),
@@ -3240,37 +3608,38 @@ async function restoreFromGoogleSheet(options = {}) {
     return false;
   }
 
-  const confirmed = silent || window.confirm("구글시트에 저장된 자료를 현재 앱으로 불러올까요? 현재 앱의 선택 프로젝트 자료가 구글시트 기준으로 바뀝니다.");
+  if (syncInFlight || savingWork || savingMaterial) return false;
+  const confirmed = silent || window.confirm("구글시트 최신 자료를 불러올까요? 이 기기의 미전송 기록과 임시 수정 내용은 보존합니다.");
   if (!confirmed) return false;
 
+  syncInFlight += 1;
   elements.restoreSyncButton.disabled = true;
   elements.restoreSyncButton.textContent = "불러오는 중";
 
   try {
     const backup = await loadSheetBackupJsonp(accessKey);
+    if (!Array.isArray(backup.workEntries) || !Array.isArray(backup.materialOrders)) throw new Error("시트 응답에 업무 또는 자재 목록이 없습니다. 기존 자료는 유지합니다.");
     const projectName = getActiveProjectName();
     const stateData = backup.stateData || {};
     const scriptIsCurrent = backup.scriptVersion === REQUIRED_SCRIPT_VERSION;
-    if (!scriptIsCurrent && silent) {
+    if (!scriptIsCurrent) {
       throw new Error("이 프로젝트의 Apps Script가 최신 보안 버전이 아닙니다. 최신 코드를 배포한 뒤 다시 접속해주세요.");
     }
     const mergedDeletedRecords = mergeDeletedRecords(state.deletedRecords, stateData.deletedRecords);
     state.deletedRecords = mergedDeletedRecords;
 
-    state.entries = [
-      ...state.entries.filter((entry) => (entry.project || "제천2덕동골") !== projectName),
-      ...normalizeEntries(backup.workEntries || [])
-        .map((entry) => ({ ...entry, project: projectName, status: "synced" }))
-        .filter((entry) => !isDeletedRecord("work", entry, projectName))
-    ];
-    state.materialOrders = [
-      ...state.materialOrders.filter((entry) => (entry.project || "제천2덕동골") !== projectName),
-      ...normalizeMaterialOrders(backup.materialOrders || [])
-        .map((order) => ({ ...order, project: projectName, status: "synced" }))
-        .filter((order) => !isDeletedRecord("material", order, projectName))
-    ];
+    state.entries = mergeProjectRecords(state.entries, normalizeEntries(backup.workEntries), projectName, "work");
+    state.materialOrders = mergeProjectRecords(state.materialOrders, normalizeMaterialOrders(backup.materialOrders), projectName, "material");
 
-    if (stateData.config) {
+    const pendingShared = state.pendingShared[projectName];
+    if (pendingShared) {
+      state.config = normalizeConfig(pendingShared.config || sourceData.config);
+      if (pendingShared.projectSettings) getActiveProject().constructionStartDate = pendingShared.projectSettings.constructionStartDate || "";
+    } else if (!stateData.config) {
+      state.config = normalizeConfig(sourceData.config);
+    }
+    if (stateData.projectSettings && !pendingShared) getActiveProject().constructionStartDate = stateData.projectSettings.constructionStartDate || "";
+    if (stateData.config && !pendingShared) {
       state.config = normalizeConfig(stateData.config);
     }
 
@@ -3278,7 +3647,7 @@ async function restoreFromGoogleSheet(options = {}) {
       state.projects = mergeProjects(stateData.projects, state.projects);
     }
 
-    if (Array.isArray(stateData.extraSummaryItems)) {
+    if (Array.isArray(stateData.extraSummaryItems) && !pendingShared) {
       state.extraSummaryItems = [
         ...state.extraSummaryItems.filter((item) => (item.project || "제천2덕동골") !== projectName),
         ...stateData.extraSummaryItems.map((item) => ({
@@ -3290,7 +3659,7 @@ async function restoreFromGoogleSheet(options = {}) {
       ];
     }
 
-    state.lastSync = stateData.savedAt || new Date().toISOString();
+    state.lastSync = new Date().toISOString();
     saveState();
     renderAll();
     if (!silent) {
@@ -3304,6 +3673,7 @@ async function restoreFromGoogleSheet(options = {}) {
     if (silent) throw error;
     return false;
   } finally {
+    syncInFlight -= 1;
     elements.restoreSyncButton.disabled = false;
     elements.restoreSyncButton.textContent = "구글시트 불러오기";
   }
@@ -3400,15 +3770,11 @@ function downloadCsv(rows, filename) {
 }
 
 function filteredWorkRows() {
-  const start = elements.summaryStart.value || "0000-01-01";
-  const end = elements.summaryEnd.value || "9999-12-31";
-  return projectEntries().filter((entry) => entry.date >= start && entry.date <= end);
+  return projectEntries().filter((entry) => inSummaryRange(entry.date));
 }
 
 function filteredMaterialRows() {
-  const start = elements.summaryStart.value || "0000-01-01";
-  const end = elements.summaryEnd.value || "9999-12-31";
-  return projectMaterialOrders().filter((entry) => !entry.date || (entry.date >= start && entry.date <= end));
+  return projectMaterialOrders().filter((entry) => inSummaryRange(entry.date));
 }
 
 function todayWorkEntries() {
@@ -3603,50 +3969,38 @@ function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function calculateTotals(workRows, materialRows) {
+function calculateTotals(workRows, materialRows, extras = filteredExtraSummaryItems()) {
   const laborRows = workRows.filter((entry) => entry.costType === "인건비");
   const equipmentRows = workRows.filter((entry) => entry.costType === "장비대");
+  const otherRows = workRows.filter((entry) => !["인건비", "장비대"].includes(entry.costType));
   const laborCost = sum(laborRows.map((entry) => amountOf(entry.cost)));
   const equipmentCost = sum(equipmentRows.map((entry) => amountOf(entry.cost)));
+  const otherCost = sum(otherRows.map((entry) => amountOf(entry.cost)));
   const laborPaid = sum(laborRows.map(workPaidAmount));
   const laborCredit = sum(laborRows.map(workCreditAmount));
   const equipmentPaid = sum(equipmentRows.map(workPaidAmount));
   const equipmentCredit = sum(equipmentRows.map(workCreditAmount));
+  const otherPaid = sum(otherRows.map(workPaidAmount));
+  const otherCredit = sum(otherRows.map(workCreditAmount));
   const materialCost = sum(materialRows.map((entry) => amountOf(entry.orderAmount)));
   const materialCredit = sum(materialRows.map(materialCreditAmount));
-  const materialPaid = Math.max(0, materialCost - materialCredit);
-  const extraCredit = sum(projectExtraSummaryItems().filter((entry) => entry.type === "credit").map((entry) => amountOf(entry.amount)));
-  const extraPaid = sum(projectExtraSummaryItems().filter((entry) => entry.type !== "credit").map((entry) => amountOf(entry.amount)));
-  const credit = laborCredit + equipmentCredit + materialCredit + extraCredit;
-  const comparisonProfit = sum(materialRows.map(materialComparisonProfit));
-  const extraCost = sum(projectExtraSummaryItems().map((entry) => amountOf(entry.amount)));
-  const paidAmount = laborPaid + equipmentPaid + materialPaid + extraPaid;
+  const materialPaid = sum(materialRows.map((entry) => Math.max(0, amountOf(entry.orderAmount) - materialCreditAmount(entry))));
+  const extraCredit = sum(extras.filter((entry) => entry.type === "credit").map((entry) => amountOf(entry.amount)));
+  const extraPaid = sum(extras.filter((entry) => entry.type !== "credit").map((entry) => amountOf(entry.amount)));
+  const extraCost = extraPaid + extraCredit;
+  const credit = laborCredit + equipmentCredit + otherCredit + materialCredit + extraCredit;
+  const paidAmount = laborPaid + equipmentPaid + otherPaid + materialPaid + extraPaid;
+  const totalCost = laborCost + equipmentCost + otherCost + materialCost + extraCost;
   return {
-    laborCost,
-    laborPaid,
-    laborCredit,
-    equipmentCost,
-    equipmentPaid,
-    equipmentCredit,
-    materialCost,
-    materialPaid,
-    materialCredit,
-    extraCost,
-    extraPaid,
-    extraCredit,
-    credit,
-    paidAmount,
-    comparisonProfit,
-    totalCost: laborCost + equipmentCost + materialCost + extraCost
+    laborCost, equipmentCost, otherCost, laborPaid, laborCredit, equipmentPaid, equipmentCredit,
+    otherPaid, otherCredit, materialCost, materialCredit, materialPaid, extraCredit, extraPaid, extraCost,
+    credit, paidAmount, totalCost, difference: totalCost - paidAmount - credit,
+    comparisonProfit: sum(materialRows.map(materialComparisonProfit))
   };
 }
 
 function isPaidPaymentStatus(status) {
-  const text = String(status || "").trim();
-  if (!text) return false;
-  if (text === DEFAULT_PAYMENT_STATUS) return false;
-  if (text.includes("외상") || text.includes("미지급") || text.includes("미결제")) return false;
-  return true;
+  return ["결제완료", "현장결제", "카드결제", "지급완료", "완납"].includes(String(status || "").trim());
 }
 
 function workPaidAmount(entry) {
@@ -3658,10 +4012,7 @@ function workCreditAmount(entry) {
 }
 
 function materialCreditAmount(entry) {
-  const orderAmount = amountOf(entry.orderAmount);
-  const creditAmount = amountOf(entry.creditAmount);
-  if (!creditAmount) return 0;
-  return orderAmount > 0 ? Math.min(orderAmount, creditAmount) : creditAmount;
+  return amountOf(entry.creditAmount);
 }
 
 function materialComparisonProfit(entry) {
@@ -3672,15 +4023,12 @@ function materialComparisonProfit(entry) {
 
 function calculateOperationStats() {
   const startDate = getProjectStartDate();
-  const endDate = isoToday;
-  const workDays = startDate
-    ? countUnique(projectEntries()
-      .filter((row) => row.date && row.date >= startDate && row.date <= endDate)
-      .map((row) => row.date))
-    : 0;
+  const endDate = toISODate(new Date());
+  const dates = projectEntries().filter((row) => row.date && row.date >= startDate && row.date <= endDate).map((row) => row.date);
   return {
     startDate,
-    workDays,
+    workDays: startDate ? countUnique(dates) : 0,
+    periodWorkDays: startDate ? countUnique(dates.filter(inSummaryRange)) : 0,
     elapsedDays: elapsedDaysInclusive(startDate, endDate)
   };
 }
@@ -3710,13 +4058,11 @@ function countUnique(values) {
 }
 
 function getProjectStartDate() {
-  if (elements.summaryStart.value) return elements.summaryStart.value;
-  const dates = [
-    state.dashboard.constructionStartDate,
-    ...projectEntries().map((row) => row.date),
-    ...projectMaterialOrders().map((row) => row.date)
-  ].filter(Boolean).sort();
-  return dates[0] || "";
+  const project = getActiveProject();
+  if (project.constructionStartDate) return project.constructionStartDate;
+  const legacyStart = project.name === defaultProjects[0]?.name ? state.dashboard.constructionStartDate : "";
+  if (legacyStart) return legacyStart;
+  return [...projectEntries(), ...projectMaterialOrders()].map((row) => row.date).filter(Boolean).sort()[0] || "";
 }
 
 function elapsedDaysInclusive(start, end) {
@@ -3745,7 +4091,8 @@ function normalizeProjects(projects = []) {
   return source.map((project) => ({
     name: project.name || "프로젝트",
     syncEndpoint: project.syncEndpoint || "",
-    spreadsheetId: project.spreadsheetId || ""
+    spreadsheetId: project.spreadsheetId || "",
+    constructionStartDate: project.constructionStartDate || ""
   }));
 }
 
@@ -3786,9 +4133,9 @@ function normalizeEntries(entries = []) {
     detailProcess: entry.detailProcess || "",
     equipment: entry.equipment || "",
     labor: entry.labor || "",
-    workAmount: entry.workAmount || "",
+    workAmount: entry.workAmount ?? "",
     costType: entry.costType || "",
-    cost: entry.cost || "",
+    cost: entry.cost ?? "",
     memo: entry.memo || "",
     contractFlag: Boolean(entry.contractFlag),
     paymentStatus: entry.paymentStatus === "도급" && Boolean(entry.contractFlag) ? "" : entry.paymentStatus || "",
@@ -3797,7 +4144,10 @@ function normalizeEntries(entries = []) {
     contractOriginalCost: entry.contractOriginalCost ?? "",
     contractOriginalCostType: entry.contractOriginalCostType || "",
     status: entry.status || "synced",
-    createdAt: entry.createdAt || ""
+    createdAt: entry.createdAt || "",
+    updatedAt: entry.updatedAt || "",
+    _syncBase: entry._syncBase,
+    _remoteConflict: entry._remoteConflict
   }));
 }
 
@@ -3811,21 +4161,23 @@ function normalizeMaterialOrders(materialOrders = []) {
     product: order.product || "",
     vendor: order.vendor || "",
     area: order.area || "",
-    orderAmount: order.orderAmount || "",
-    lowPrice: order.lowPrice || "",
-    highPrice: order.highPrice || "",
+    orderAmount: order.orderAmount ?? "",
+    lowPrice: order.lowPrice ?? "",
+    highPrice: order.highPrice ?? "",
     memo: order.memo || "",
-    creditAmount: order.creditAmount || "",
+    creditAmount: order.creditAmount ?? "",
     status: order.status || "synced",
-    createdAt: order.createdAt || ""
+    createdAt: order.createdAt || "",
+    updatedAt: order.updatedAt || "",
+    _syncBase: order._syncBase,
+    _remoteConflict: order._remoteConflict
   }));
 }
 
 function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return clone(seedState);
-
   try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return clone(seedState);
     const parsed = JSON.parse(raw);
     const loaded = {
       ...clone(seedState),
@@ -3834,11 +4186,14 @@ function loadState() {
         ...clone(seedState.config),
         ...parsed.config
       },
-      entries: parsed.entries?.length ? normalizeEntries(parsed.entries).map((entry) => ({ ...entry, project: entry.project || "제천2덕동골" })) : clone(seedState.entries),
-      materialOrders: parsed.materialOrders?.length ? normalizeMaterialOrders(parsed.materialOrders).map((order) => ({ ...order, project: order.project || "제천2덕동골" })) : clone(seedState.materialOrders),
+      entries: Array.isArray(parsed.entries) ? normalizeEntries(parsed.entries) : clone(seedState.entries),
+      materialOrders: Array.isArray(parsed.materialOrders) ? normalizeMaterialOrders(parsed.materialOrders) : clone(seedState.materialOrders),
       projects: mergeProjects(parsed.projects || [], clone(seedState.projects)),
       extraSummaryItems: (parsed.extraSummaryItems || []).map((item) => ({ ...item, project: item.project || "제천2덕동골", type: item.type || "spent" })),
       deletedRecords: normalizeDeletedRecords(parsed.deletedRecords),
+      sheetEdits: parsed.sheetEdits || {},
+      workForms: parsed.workForms || {},
+      pendingShared: parsed.pendingShared || {},
       editingEntryId: "",
       editingMaterialId: ""
     };
@@ -3852,12 +4207,34 @@ function loadState() {
     }
     return loaded;
   } catch {
+    storageLoadFailed = true;
+    window.alert("기존 기기 저장자료를 읽지 못했습니다. 데이터 삭제나 초기화를 하지 말아주세요.");
     return clone(seedState);
   }
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (storageLoadFailed) throw new Error("기존 기기 저장자료를 읽을 수 없어 덮어쓰기를 중지했습니다. 브라우저 데이터를 지우지 말고 백업부터 확인해주세요.");
+  try {
+    const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    // Remember the last acknowledged version before editing, so a retry can detect a competing edit.
+    for (const [field, key] of [["entries", workSyncKey], ["materialOrders", materialContentKey]]) {
+      const old = new Map((previous[field] || []).map((row) => [row.project + ":" + row.id, row]));
+      state[field].forEach((row) => {
+        const prior = old.get(row.project + ":" + row.id);
+        if (["sent", "synced"].includes(row.status)) {
+          delete row._syncBase;
+          delete row._remoteConflict;
+        } else if (prior && !row._syncBase && ["sent", "synced"].includes(prior.status) && key(row) !== key(prior)) {
+          row._syncBase = key(prior);
+        }
+      });
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    window.alert("기기 저장에 실패했습니다. 화면을 닫거나 새로고침하지 말고 기기 백업을 내려받아 주세요.");
+    throw error;
+  }
 }
 
 function toISODate(date) {
@@ -3906,19 +4283,40 @@ function formatWorkAmountNumber(value) {
 
 function numberOrBlank(value) {
   if (value === "" || value === null || value === undefined) return "";
-  const number = Number(value);
-  return Number.isNaN(number) ? "" : number;
+  const number = parseAmount(value);
+  return Number.isFinite(number) ? number : "";
 }
 
 function amountOf(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  const normalized = String(value ?? "").replace(/[^\d.-]/g, "");
-  const number = Number(normalized);
+  const number = parseAmount(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function parseAmount(value) {
+  if (value === "" || value == null) return 0;
+  if (typeof value === "number") return value;
+  const normalized = String(value).trim().replace(/원$/, "").replace(/,/g, "").trim();
+  return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized) ? Number(normalized) : NaN;
+}
+
+function inSummaryRange(date) {
+  const start = elements.summaryStart.value;
+  const end = elements.summaryEnd.value;
+  return date ? (!start || date >= start) && (!end || date <= end) : !start && !end;
+}
+
+function filteredExtraSummaryItems() {
+  return projectExtraSummaryItems().filter((entry) => inSummaryRange(entry.date));
 }
 
 function sum(values) {
   return values.reduce((total, value) => total + amountOf(value), 0);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return JSON.stringify(value.map((item) => JSON.parse(stableJson(item))));
+  if (value && typeof value === "object") return JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stableJson(value[key]))])));
+  return JSON.stringify(value ?? null);
 }
 
 function clone(value) {

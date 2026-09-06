@@ -2320,3 +2320,51 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+.sync-notice,
+.summary-audit {
+  padding: 12px 16px;
+  margin: 12px 0;
+  border: 1px solid #d6ad6c;
+  border-radius: 12px;
+  background: #fff3d9;
+  color: #563c1c;
+  overflow-wrap: anywhere;
+}
+.sync-notice p { margin: 0 0 8px; }
+.sync-notice details { margin-top: 10px; }
+.sync-notice pre { white-space: pre-wrap; font: inherit; font-size: 12px; }
+.sync-notice details button { margin: 4px; }
+.summary-audit { background: #edf5e8; border-color: #9ab488; color: #355327; }
+.summary-audit.has-issues { background: #fff0e9; border-color: #d89576; color: #853c25; }
+.construction-date-field { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 16px; }
+.construction-date-field > span { font-weight: 700; }
+.construction-date-field input { width: 170px; }
+.construction-date-field small { color: #756451; }
+.ledger-open-button { background: transparent; border: 0; padding: 6px 0 0; color: inherit; font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.summary-ledger { margin: 14px 0; border: 1px solid #dcc6ac; border-radius: 10px; padding: 12px; }
+.summary-ledger > summary { cursor: pointer; font-weight: 700; }
+.ledger-filters { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 0; }
+.ledger-filters label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.ledger-scroll { overflow-x: auto; max-height: 460px; }
+.ledger-scroll table { min-width: 850px; }
+.ledger-scroll td:nth-child(3) { min-width: 180px; max-width: 350px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ledger-scroll tfoot { font-weight: 700; background: #efe1cd; position: sticky; bottom: 0; }
+.ledger-source-highlight { outline: 2px solid #a87125; outline-offset: -2px; }
+.sheet-cell[data-dirty="true"] { background: #fff0bc; box-shadow: inset 0 0 0 1px #bb842c; }
+.extra-chip input[type="date"] { width: 145px; min-width: 0; }
+.extra-chip { flex-wrap: wrap; }
+.summary-extra-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.summary-extra-form > * { flex: 1 1 130px; min-width: 0; }
+.status-dot.conflict { background: #b84f31; }
+@media (max-width: 640px) {
+  .entry-basic-grid { grid-template-columns: 150px minmax(0, 1fr); }
+  .construction-date-field small { flex-basis: 100%; }
+  .ledger-filters > label { flex: 1 1 100%; }
+  .ledger-filters select { flex: 1; min-width: 0; }
+  .summary-ledger { padding: 9px; min-width: 0; }
+  .sync-notice .row-actions { flex-wrap: wrap; }
+}
+@media (max-width: 360px) {
+  .entry-basic-grid { grid-template-columns: minmax(0, 1fr); }
+}
