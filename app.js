@@ -81,6 +81,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderAll();
   registerServiceWorker();
   await showProjectAccessGate(getActiveProjectName());
+  refreshProjectDirectory();
 });
 
 function registerServiceWorker() {
@@ -247,6 +248,17 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  document.querySelectorAll("[data-refresh-projects]").forEach((button) => button.addEventListener("click", refreshProjectDirectory));
+  window.addEventListener("focus", () => refreshProjectDirectory());
+  document.querySelectorAll("[data-project-manager]").forEach((link) => {
+    link.href = window.ProjectDirectory?.managerUrl || "#";
+    link.addEventListener("click", (event) => {
+      if (!window.ProjectDirectory?.enabled) {
+        event.preventDefault();
+        window.alert("자동 연결 서버 설정이 아직 완료되지 않았습니다. 기존 현장은 정상 사용할 수 있습니다.");
+      }
+    });
+  });
   ["input", "change"].forEach((eventName) => elements.entryForm.addEventListener(eventName, rememberWorkForm));
   window.addEventListener("online", () => retryPendingRecords());
   window.addEventListener("beforeunload", (event) => {
@@ -452,6 +464,7 @@ function bindEvents() {
   });
 
   elements.saveSyncButton.addEventListener("click", () => {
+    if (getActiveProject().managed) return;
     const endpoint = elements.syncEndpoint.value.trim();
     const project = getActiveProject();
     project.syncEndpoint = endpoint;
@@ -3013,7 +3026,7 @@ function renderProjectSettings() {
     card.innerHTML = `
       <header>
         <strong>${escapeHtml(project.name)}</strong>
-        <button class="icon-btn delete" type="button" title="프로젝트 삭제" data-remove-project="${escapeAttr(project.name)}" ${state.projects.length <= 1 ? "disabled" : ""}>X</button>
+        ${project.managed ? '<span class="pill muted">자동 연결</span>' : `<button class="icon-btn delete" type="button" title="프로젝트 삭제" data-remove-project="${escapeAttr(project.name)}" ${state.projects.length <= 1 ? "disabled" : ""}>X</button>`}
       </header>
       <p>${project.syncEndpoint ? "구글시트 연결됨" : "URL 미등록"}</p>
     `;
@@ -3025,6 +3038,46 @@ function renderProjectSettings() {
   });
 }
 
+let directoryRefreshTask = null;
+let directoryLastRefresh = 0;
+async function refreshProjectDirectory(event) {
+  if (!window.ProjectDirectory?.enabled) return false;
+  if (directoryRefreshTask) return directoryRefreshTask;
+  if (!event && Date.now() - directoryLastRefresh < 30000) return false;
+  const buttons = [...document.querySelectorAll("[data-refresh-projects]")];
+  const notices = [...document.querySelectorAll("[data-project-directory-status]")];
+  buttons.forEach((button) => { button.disabled = true; });
+  notices.forEach((notice) => { notice.textContent = "새 프로젝트 목록 확인 중..."; });
+  directoryRefreshTask = (async () => {
+    try {
+      const projects = await window.ProjectDirectory.list();
+      // Never replace a legacy connection or touch unsent records while refreshing names.
+      projects.forEach((project) => {
+        const existing = state.projects.find((item) => item.name === project.name);
+        if (!existing) state.projects.push(project);
+        else if (existing.managed) Object.assign(existing, project);
+      });
+      saveState();
+      const selected = elements.accessProjectSelect.value;
+      fillSelect(elements.accessProjectSelect, state.projects.map((project) => project.name));
+      elements.accessProjectSelect.value = selected || getActiveProjectName();
+      fillSelect(elements.projectSelect, state.projects.map((project) => project.name));
+      elements.projectSelect.value = getActiveProjectName();
+      renderProjectSettings();
+      directoryLastRefresh = Date.now();
+      notices.forEach((notice) => { notice.textContent = "프로젝트 목록 최신 상태 · 새 현장을 선택한 뒤 비밀번호로 접속하세요."; });
+      return true;
+    } catch (error) {
+      notices.forEach((notice) => { notice.textContent = error.message; });
+      return false;
+    } finally {
+      buttons.forEach((button) => { button.disabled = false; });
+      directoryRefreshTask = null;
+    }
+  })();
+  return directoryRefreshTask;
+}
+
 function addProject() {
   const name = elements.newProjectName.value.trim();
   const endpoint = elements.newProjectEndpoint.value.trim();
@@ -3032,18 +3085,23 @@ function addProject() {
     window.alert("프로젝트명을 입력해주세요.");
     return;
   }
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(endpoint)) {
+    window.alert("올바른 Apps Script 배포 URL을 입력하거나 위의 자동 연결을 이용해주세요.");
+    return;
+  }
   const existing = state.projects.find((project) => project.name === name);
   if (existing) {
-    existing.syncEndpoint = endpoint || existing.syncEndpoint;
+    window.alert("같은 이름의 프로젝트가 이미 있습니다. 기존 연결은 변경하지 않았습니다.");
+    return;
   } else {
     state.projects.push({ name, syncEndpoint: endpoint, spreadsheetId: "" });
   }
-  state.activeProject = name;
   elements.newProjectName.value = "";
   elements.newProjectEndpoint.value = "";
   saveState();
   renderAll();
   queueSharedBackup();
+  window.alert("프로젝트 목록에 추가했습니다. 해당 현장을 선택하고 비밀번호로 접속하면 연결을 확인합니다.");
 }
 
 function removeProject(name) {
@@ -3398,6 +3456,8 @@ function settingTypeLabel(type) {
 function renderSyncState() {
   const endpoint = getSyncEndpoint();
   elements.syncEndpoint.value = endpoint;
+  elements.syncEndpoint.readOnly = Boolean(getActiveProject().managed);
+  elements.saveSyncButton.disabled = Boolean(getActiveProject().managed);
   const rows = pendingRecords();
   const conflicts = rows.filter((row) => row.status === "conflict").length;
   const sharedPending = Boolean(state.pendingShared[getActiveProjectName()]);
@@ -4092,6 +4152,7 @@ function normalizeProjects(projects = []) {
     name: project.name || "프로젝트",
     syncEndpoint: project.syncEndpoint || "",
     spreadsheetId: project.spreadsheetId || "",
+    managed: Boolean(project.managed),
     constructionStartDate: project.constructionStartDate || ""
   }));
 }

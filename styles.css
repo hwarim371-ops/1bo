@@ -2368,3 +2368,10 @@ tr:last-child td {
 @media (max-width: 360px) {
   .entry-basic-grid { grid-template-columns: minmax(0, 1fr); }
 }
+.project-connect-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.project-connect-actions a { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; text-align: center; }
+.project-connect-actions > * { flex: 1 1 180px; min-height: 44px; }
+.project-manual-connect { margin: 16px 0; padding: 12px; border: 1px solid #e2cfb7; border-radius: 10px; }
+.project-manual-connect summary { cursor: pointer; font-size: 13px; color: #765f49; }
+.project-manual-connect .project-add-form { margin-top: 12px; }
+

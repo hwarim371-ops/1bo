@@ -1,4 +1,5 @@
 window.APP_CONFIG = {
+  projectDirectoryEndpoint: "https://script.google.com/macros/s/AKfycbx-EbImEOkTV9IuVnTbW0RISTmBabde91_rRtKE_qdMGdXVUreb12qbTaa7QT6iUZsP/exec",
   // 비밀번호는 이 파일에 넣지 않습니다. 각 프로젝트 Apps Script의
   // setupProjectPassword 함수로 Script Properties에 설정합니다.
   projects: [
