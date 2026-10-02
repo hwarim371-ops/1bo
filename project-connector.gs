@@ -1,5 +1,5 @@
 // Deploy as a NEW standalone Apps Script. Do not replace legacy project scripts.
-const CONNECTOR_VERSION = "project-connector-2026-10-02";
+const CONNECTOR_VERSION = "project-connector-2026-10-02-password-edit";
 const COMPATIBLE_VERSION = "secure-sync-2026-06-12";
 const RESERVED_PROJECTS = ["제천2조은삼", "천안1", "화순"];
 const WORK_FIELDS = ["id", "date", "mainProcess", "subProcess", "detailProcess", "equipment", "labor", "workAmount", "costType", "cost", "paymentStatus", "memo", "project", "contractFlag", "contractTotal", "contractGroupId", "contractOriginalCost", "contractOriginalCostType", "createdAt", "updatedAt"];
@@ -24,7 +24,7 @@ function setupConnector() {
 function requireOwner_() {
   const owner = PropertiesService.getScriptProperties().getProperty("CONNECTOR_OWNER");
   if (!owner || Session.getActiveUser().getEmail() !== owner || Session.getEffectiveUser().getEmail() !== owner) {
-    throw new Error("프로젝트 생성은 이 연결 서버의 구글 관리자 계정으로만 가능합니다.");
+    throw new Error("프로젝트 생성과 비밀번호 변경은 이 연결 서버의 구글 관리자 계정으로만 가능합니다.");
   }
 }
 
@@ -42,13 +42,19 @@ function writeProject_(project) {
   PropertiesService.getScriptProperties().setProperty(projectKey_(project.name), JSON.stringify(project));
 }
 
+function validatePassword_(password) {
+  if (typeof password !== "string" || password.length < 8 || password.length > 128 || !password.trim()) {
+    throw new Error("새 비밀번호는 8~128자로 입력해주세요.");
+  }
+}
+
 function createManagedProject(input) {
   requireOwner_();
   const name = String(input?.name || "").trim().normalize("NFC");
-  const password = String(input?.password || "");
+  const password = input?.password;
   const requestId = String(input?.requestId || "");
   if (!name || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name) || RESERVED_PROJECTS.includes(name)) throw new Error("기존 현장과 겹치지 않는 이름을 80자 이내로 입력해주세요.");
-  if (password.length < 8 || password.length > 128) throw new Error("비밀번호는 8~128자로 입력해주세요.");
+  validatePassword_(password);
   if (!/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) throw new Error("생성 요청이 올바르지 않습니다. 화면을 다시 열어주세요.");
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -83,7 +89,37 @@ function createManagedProject(input) {
 }
 
 function projectResult_(project) {
-  return { name: project.name, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/" + project.spreadsheetId + "/edit" };
+  return { name: project.name, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/" + project.spreadsheetId + "/edit", passwordRevision: project.passwordRevision || 0 };
+}
+
+function changeManagedProjectPassword(input) {
+  requireOwner_();
+  const name = String(input?.name || "").trim().normalize("NFC");
+  const password = input?.password;
+  validatePassword_(password);
+  const expectedRevision = input?.expectedRevision;
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("현장 목록을 새로고침한 뒤 다시 선택해주세요.");
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const project = readProject_(name);
+    if (!project || project.status !== "ready") throw new Error("자동 연결이 완료된 현장만 비밀번호를 변경할 수 있습니다.");
+    const revision = project.passwordRevision || 0;
+    const alreadyMatches = equal_(project.verifier, hash_(project.salt + hash_(password)));
+    // A lost response can be retried, but a stale form cannot undo a later change.
+    if (revision !== expectedRevision) {
+      if (revision === expectedRevision + 1 && alreadyMatches) return projectResult_(project);
+      throw new Error("다른 화면에서 비밀번호가 변경되었습니다. 취소 후 목록을 새로고침하고 다시 선택해주세요.");
+    }
+    if (!alreadyMatches) {
+      project.salt = Utilities.getUuid();
+      project.verifier = hash_(project.salt + hash_(password));
+      project.passwordRevision = revision + 1;
+      project.passwordChangedAt = new Date().toISOString();
+      writeProject_(project);
+    }
+    return projectResult_(project);
+  } finally { lock.releaseLock(); }
 }
 
 function doGet(e) {
@@ -91,7 +127,7 @@ function doGet(e) {
   try {
     if (params.action === "manage") {
       requireOwner_();
-      return HtmlService.createHtmlOutput(MANAGER_HTML).setTitle("화림 새 프로젝트 자동 연결").addMetaTag("viewport", "width=device-width, initial-scale=1");
+      return HtmlService.createHtmlOutput(MANAGER_HTML).setTitle("화림 프로젝트 관리").addMetaTag("viewport", "width=device-width, initial-scale=1");
     }
     if (params.action === "projects") return json_({ ok: true, connectorVersion: CONNECTOR_VERSION, projects: registry_().filter((p) => p.status === "ready").map((p) => ({ name: p.name })) }, params.callback);
     if (params.action === "health") return json_({ ok: true, connectorVersion: CONNECTOR_VERSION, configured: Boolean(PropertiesService.getScriptProperties().getProperty("CONNECTOR_OWNER")) }, params.callback);
@@ -127,11 +163,13 @@ function doPost(e) {
     const text = e?.postData?.contents || "{}";
     if (text.length > 2000000) throw new Error("한 번에 저장할 수 있는 크기를 초과했습니다.");
     const input = JSON.parse(text);
-    const project = authorize_(input);
+    authorize_(input);
     const allowed = ["workEntries", "materialOrders", "deleteWorkEntries", "deleteMaterialOrders", "appState", "summarySnapshot"];
     if (!allowed.includes(input.type)) throw new Error("지원하지 않는 동기화 요청입니다.");
     lock = LockService.getScriptLock();
     lock.waitLock(30000);
+    // Reject writes queued with the previous password before a password change.
+    const project = authorize_(input);
     // The sheet ID always comes from the private registry, never from the request.
     const ss = SpreadsheetApp.openById(project.spreadsheetId);
     const records = Array.isArray(input.records) ? input.records : [];
@@ -236,23 +274,43 @@ function json_(value, callback) {
 }
 
 const MANAGER_HTML = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>
-*{box-sizing:border-box}body{margin:0;padding:24px;background:#f4eee5;color:#302113;font:16px/1.6 system-ui,sans-serif}main{max-width:680px;margin:24px auto;padding:28px;background:#fffaf2;border:1px solid #decbb4;border-radius:20px}h1{font-size:25px;line-height:1.3}label{display:block;margin-top:16px;font-weight:600}input{display:block;width:100%;padding:12px;margin-top:6px;border:1px solid #cbb496;border-radius:8px;font:inherit}button,.link{display:inline-block;cursor:pointer;background:#63401f;color:white;border:0;border-radius:8px;padding:12px 18px;font:inherit;text-decoration:none}button{width:100%;margin:20px 0 0}button:disabled{opacity:.6;cursor:wait}.muted{font-size:14px;color:#74624f}#status{white-space:pre-wrap}li{margin:12px 0}a{color:#63401f}@media(max-width:480px){body{padding:12px}main{padding:20px;margin:0}}
-</style></head><body><main><p class="muted">화림 업무일지 · 구글 관리자 전용</p><h1>새 프로젝트 자동 연결</h1><p>현장명과 비밀번호를 정하면 전용 구글시트를 만들고 업무일지에 자동 연결합니다.</p><form id="createForm">
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;padding:24px;background:#f4eee5;color:#302113;font:16px/1.6 system-ui,sans-serif}main{max-width:720px;margin:24px auto;padding:28px;background:#fffaf2;border:1px solid #decbb4;border-radius:20px}h1{font-size:25px;line-height:1.3}h2{font-size:19px}h3{margin:0;font-size:18px}label{display:block;margin-top:16px;font-weight:600}input{display:block;width:100%;min-width:0;padding:12px;margin-top:6px;border:1px solid #cbb496;border-radius:8px;font:inherit}button,.link{display:inline-block;cursor:pointer;background:#63401f;color:white;border:1px solid #63401f;border-radius:8px;padding:11px 16px;font:inherit;text-decoration:none}button:disabled{opacity:.6;cursor:wait}.secondary{background:transparent;color:#63401f}.muted{font-size:14px;color:#74624f}.status{white-space:pre-wrap;overflow-wrap:anywhere}.status:empty{display:none}a{color:#63401f;overflow-wrap:anywhere}fieldset{border:0;padding:0;margin:0;min-width:0}.submit{width:100%;margin-top:18px}.section-head,.project-row,.actions{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head{margin-top:24px;flex-wrap:wrap}.section-head button,.project-row button{font-size:14px;flex-shrink:0}.project-row{padding:14px 0;border-bottom:1px solid #e6d6c3}.project-row strong{display:block;overflow-wrap:anywhere}.project-info{min-width:0}.project-info a{font-size:14px}#projects{list-style:none;padding:0;margin:0}#changeForm{margin:18px 0;padding:20px;background:#f7ead7;border:1px solid #c49b6c;border-radius:12px;scroll-margin-top:16px}.password-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions{margin-top:18px}.actions button{flex:1}.create-section{margin-top:28px;border-top:1px solid #decbb4;padding-top:12px}input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid #b27839;outline-offset:3px}@media(max-width:480px){body{padding:12px}main{padding:20px;margin:0}.password-fields{grid-template-columns:1fr;gap:0}#changeForm{padding:16px}.project-row{align-items:flex-start;flex-wrap:wrap}.project-row button{margin-left:auto}}
+</style></head><body><main><p class="muted">화림 업무일지 · 구글 관리자 전용</p><h1>프로젝트 관리</h1><p>현장을 새로 만들거나, 자동 연결된 현장의 접속 비밀번호를 변경합니다.</p>
+<div class="section-head"><h2>자동 연결된 현장</h2><button id="refresh" type="button" class="secondary">목록 새로고침</button></div><ul id="projects" aria-label="자동 연결된 현장 목록"><li>목록을 불러오는 중입니다.</li></ul>
+<form id="changeForm" hidden aria-labelledby="changeTitle"><fieldset id="changeFields"><h3 id="changeTitle">비밀번호 변경 · <span id="changeName"></span></h3>
+<p class="muted">업무·자재 자료와 시트 연결은 그대로 유지됩니다. 변경 후에는 새 비밀번호로 다시 접속해주세요. 이미 기기에 내려받은 자료는 삭제되지 않습니다.</p>
+<div class="password-fields"><label>새 비밀번호<input id="newPassword" type="password" minlength="8" maxlength="128" required autocomplete="new-password" placeholder="8자 이상 입력"></label><label>새 비밀번호 확인<input id="newConfirm" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></label></div>
+<p class="muted">새로 설정하는 비밀번호는 8자 이상입니다. 기존 비밀번호는 직접 변경하기 전까지 유지됩니다.</p><div class="actions"><button id="cancelChange" type="button" class="secondary">취소</button><button type="submit">비밀번호 변경 저장</button></div></fieldset><p id="changeStatus" class="status" role="status" aria-live="polite"></p></form>
+<p id="status" class="status" role="status" aria-live="polite"></p><div id="result"></div>
+<p class="muted">이 목록은 새 자동 연결 서버에서 만든 현장입니다. 기존 제천2조은삼·천안1·화순은 각 현장의 Apps Script에서 비밀번호를 관리합니다.</p>
+<section class="create-section"><h2>새 프로젝트 자동 연결</h2><p class="muted">현장명과 비밀번호를 정하면 전용 구글시트를 만들고 업무일지에 자동 연결합니다.</p><form id="createForm"><fieldset id="createFields">
 <label>새 현장 이름<input id="name" maxlength="80" required placeholder="예: 제천3 신축현장" autocomplete="off"></label>
-<label>프로젝트 비밀번호<input id="password" type="password" minlength="8" maxlength="128" required autocomplete="new-password" placeholder="8자 이상 입력"></label>
-<label>비밀번호 확인<input id="confirm" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
-<p class="muted">비밀번호는 현장 접속에 사용됩니다. 다른 현장 비밀번호나 구글 비밀번호를 사용하지 마세요.</p><button id="create" type="submit">프로젝트 + 구글시트 만들기</button></form>
-<p id="status" role="status" aria-live="polite"></p><div id="result"></div><h2>자동 연결된 현장</h2><ul id="projects"></ul><p class="muted">기존 제천2조은삼·천안1·화순의 시트와 스크립트는 그대로 사용합니다.</p><a href="https://hwarim371-ops.github.io/1bo/" target="_blank" rel="noopener" class="link">업무일지 열기</a></main><script>
-const form=document.getElementById('createForm'),statusBox=document.getElementById('status'),button=document.getElementById('create');
-let request=null,busy=false;
+<div class="password-fields"><label>프로젝트 비밀번호<input id="password" type="password" minlength="8" maxlength="128" required autocomplete="new-password" placeholder="8자 이상 입력"></label><label>비밀번호 확인<input id="confirm" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></label></div>
+<p class="muted">비밀번호는 8~128자로 설정해주세요. 구글 계정 비밀번호를 사용하지 마세요.</p><button id="create" class="submit" type="submit">프로젝트 + 구글시트 만들기</button></fieldset><p id="createStatus" class="status" role="status" aria-live="polite"></p></form></section>
+<p><a href="https://hwarim371-ops.github.io/1bo/" target="_blank" rel="noopener" class="link">업무일지 열기</a></p></main><script>
+const $=id=>document.getElementById(id),form=$('createForm'),statusBox=$('status'),changeForm=$('changeForm');
+let request=null,busy=false,selected=null;
 function readRequest(){try{return JSON.parse(sessionStorage.getItem('pendingProject')||'null')}catch{return null}}
-request=readRequest();if(request)document.getElementById('name').value=request.name;
+request=readRequest();if(request)$('name').value=request.name;
 function remember(value){try{if(value)sessionStorage.setItem('pendingProject',JSON.stringify(value));else sessionStorage.removeItem('pendingProject')}catch{}}
-function link(project){const item=document.createElement('li'),anchor=document.createElement('a');anchor.textContent=project.name+' · 구글시트 열기';anchor.href=project.spreadsheetUrl;anchor.target='_blank';anchor.rel='noopener';item.append(anchor);return item}
-function refresh(){google.script.run.withSuccessHandler(items=>{const list=document.getElementById('projects');list.replaceChildren(...items.map(link));if(!items.length)list.textContent='아직 자동 생성한 현장이 없습니다.'}).withFailureHandler(error=>{statusBox.textContent=error.message}).listManagedProjects()}
-form.addEventListener('submit',event=>{event.preventDefault();if(busy)return;const name=document.getElementById('name').value.trim(),password=document.getElementById('password').value;
-if(password!==document.getElementById('confirm').value){statusBox.textContent='비밀번호 확인이 일치하지 않습니다.';return}
-if(!request||request.name!==name){request={name,requestId:crypto.randomUUID()};remember(request)}busy=true;button.disabled=true;statusBox.textContent='구글시트를 만들고 연결하는 중입니다. 창을 닫지 마세요.';
-google.script.run.withSuccessHandler(project=>{busy=false;button.disabled=false;statusBox.textContent='생성과 연결이 완료되었습니다. 업무일지로 돌아가 목록 새로고침 후 이 현장을 선택하세요.';document.getElementById('result').replaceChildren(link(project));form.reset();request=null;remember(null);refresh()}).withFailureHandler(error=>{busy=false;button.disabled=false;statusBox.textContent=error.message+'\\n연결이 끊겼다면 같은 이름과 비밀번호로 다시 시도하세요. 중복 생성은 방지됩니다.'}).createManagedProject({name,password,requestId:request.requestId});
+function setBusy(value){busy=value;$('createFields').disabled=value;$('changeFields').disabled=value;$('refresh').disabled=value;document.querySelectorAll('[data-change]').forEach(b=>b.disabled=value)}
+function clearChange(){changeForm.reset();changeForm.hidden=true;selected=null;$('changeStatus').textContent=''}
+function openChange(project){if(busy)return;clearChange();selected=project;$('changeName').textContent=project.name;changeForm.hidden=false;statusBox.textContent='';$('newPassword').focus()}
+function link(project){const anchor=document.createElement('a');anchor.textContent='구글시트 열기';anchor.href=project.spreadsheetUrl;anchor.target='_blank';anchor.rel='noopener';return anchor}
+function projectRow(project){const item=document.createElement('li'),info=document.createElement('div'),name=document.createElement('strong'),edit=document.createElement('button');item.className='project-row';info.className='project-info';name.textContent=project.name;info.append(name,link(project));edit.type='button';edit.textContent='비밀번호 변경';edit.className='secondary';edit.dataset.change='';edit.setAttribute('aria-label',project.name+' 비밀번호 변경');edit.disabled=busy;edit.addEventListener('click',()=>openChange(project));item.append(info,edit);return item}
+let listRequest=0;
+function refresh(){const revision=++listRequest;google.script.run.withSuccessHandler(items=>{if(revision!==listRequest)return;const list=$('projects');list.replaceChildren(...items.map(projectRow));if(!items.length)list.textContent='아직 자동 생성한 현장이 없습니다.'}).withFailureHandler(error=>{if(revision===listRequest)statusBox.textContent=error.message}).listManagedProjects()}
+$('refresh').addEventListener('click',()=>{if(!busy)refresh()});$('cancelChange').addEventListener('click',()=>{if(!busy)clearChange()});
+changeForm.addEventListener('submit',event=>{event.preventDefault();if(busy||!selected||!changeForm.reportValidity())return;const password=$('newPassword').value;
+if(password.length<8||password.length>128||!password.trim()){$('changeStatus').textContent='새 비밀번호는 8~128자로 입력해주세요.';return}
+if(password!==$('newConfirm').value){$('changeStatus').textContent='비밀번호 확인이 일치하지 않습니다.';return}
+setBusy(true);$('changeStatus').textContent='비밀번호를 변경하는 중입니다. 창을 닫지 마세요.';
+google.script.run.withSuccessHandler(project=>{setBusy(false);clearChange();statusBox.textContent=project.name+' 비밀번호가 저장되었습니다. 자료는 그대로이며, 다음 접속부터 새 비밀번호를 사용하세요.';refresh()}).withFailureHandler(error=>{setBusy(false);$('changeStatus').textContent=error.message+'\\n연결이 끊겼다면 같은 비밀번호로 다시 시도할 수 있습니다.'}).changeManagedProjectPassword({name:selected.name,password,expectedRevision:selected.passwordRevision});
+});
+form.addEventListener('submit',event=>{event.preventDefault();if(busy||!form.reportValidity())return;const name=$('name').value.trim(),password=$('password').value;
+if(password.length<8||password.length>128||!password.trim()){$('createStatus').textContent='새 비밀번호는 8~128자로 입력해주세요.';return}
+if(password!==$('confirm').value){$('createStatus').textContent='비밀번호 확인이 일치하지 않습니다.';return}
+if(!request||request.name!==name){request={name,requestId:crypto.randomUUID()};remember(request)}setBusy(true);$('createStatus').textContent='구글시트를 만들고 연결하는 중입니다. 창을 닫지 마세요.';
+google.script.run.withSuccessHandler(project=>{setBusy(false);$('createStatus').textContent='생성과 연결이 완료되었습니다. 업무일지로 돌아가 목록 새로고침 후 이 현장을 선택하세요.';$('result').replaceChildren(link(project));form.reset();request=null;remember(null);refresh()}).withFailureHandler(error=>{setBusy(false);$('createStatus').textContent=error.message+'\\n연결이 끊겼다면 같은 이름과 비밀번호로 다시 시도하세요. 중복 생성은 방지됩니다.'}).createManagedProject({name,password,requestId:request.requestId});
 });refresh();
 </script></body></html>`;
