@@ -73,6 +73,7 @@ let syncInFlight = 0;
 let retryingPending = false;
 let sharedBackupTask = null;
 const projectAccessKeys = new Map();
+let connectionCheckSequence = 0;
 
 document.addEventListener("DOMContentLoaded", async () => {
   cacheElements();
@@ -107,6 +108,8 @@ function cacheElements() {
     accessPassword: document.querySelector("#accessPassword"),
     accessError: document.querySelector("#accessError"),
     accessSubmitButton: document.querySelector("#accessSubmitButton"),
+    connectionCheckButton: document.querySelector("#connectionCheckButton"),
+    connectionStatus: document.querySelector("#connectionStatus"),
     syncOverlay: document.querySelector("#syncOverlay"),
     syncSpinner: document.querySelector("#syncSpinner"),
     syncOverlayEyebrow: document.querySelector("#syncOverlayEyebrow"),
@@ -284,7 +287,9 @@ function bindEvents() {
     queueSharedBackup();
   });
   elements.accessForm.addEventListener("submit", handleProjectAccess);
+  elements.connectionCheckButton.addEventListener("click", checkProjectConnection);
   elements.accessProjectSelect.addEventListener("change", () => {
+    resetConnectionCheck();
     state.activeProject = elements.accessProjectSelect.value;
     saveState();
     elements.accessPassword.value = "";
@@ -511,6 +516,7 @@ function bindEvents() {
 
 async function showProjectAccessGate(projectName) {
   if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) return;
+  resetConnectionCheck();
   projectAccessKeys.clear();
   state.activeProject = projectName || state.projects[0]?.name || "제천2덕동골";
   saveState();
@@ -532,6 +538,8 @@ async function handleProjectAccess(event) {
     return;
   }
 
+  resetConnectionCheck();
+  elements.connectionCheckButton.disabled = true;
   state.activeProject = projectName;
   saveState();
   renderAll();
@@ -560,6 +568,64 @@ async function handleProjectAccess(event) {
   } finally {
     elements.accessSubmitButton.disabled = false;
     elements.accessProjectSelect.disabled = false;
+    elements.connectionCheckButton.disabled = false;
+  }
+}
+
+function resetConnectionCheck() {
+  connectionCheckSequence += 1;
+  if (elements.connectionCheckButton) elements.connectionCheckButton.disabled = false;
+  if (elements.connectionStatus) elements.connectionStatus.textContent = "비밀번호 없이 연결 정보를 점검합니다. 현장 설정과 기록은 변경하지 않습니다.";
+}
+
+function selectedProjectEndpoint(projectName) {
+  // A diagnostic must not create a project or change the active selection.
+  return state.projects.find((project) => project.name === projectName)?.syncEndpoint
+    || (projectName === "제천2덕동골" ? state.syncEndpoint : "") || "";
+}
+
+function projectConnectionMessage(projectName, endpoint, results) {
+  const messages = [`${projectName} 연결 점검:`];
+  if (!endpoint) messages.push("이 기기에 선택 현장의 연결 주소가 없습니다. 관리자에게 연결 정보를 확인해주세요.");
+  const fixed = defaultProjects.some((project) => project.name === projectName && project.syncEndpoint === endpoint && endpoint);
+  if (fixed) messages.push("앱에 지정된 기존 현장 주소를 사용합니다. 목록 서버와 주소가 달라도 오래된 연결이라는 뜻은 아닙니다.");
+  if (results.projects.status === "fulfilled") {
+    const listed = results.projects.value.find((project) => project.name === projectName);
+    if (!listed) messages.push("현재 공개 목록에 이 현장이 없습니다. 기존 수동 현장은 목록에 없을 수 있습니다. 관리자에게 현장 등록 상태를 확인해주세요.");
+    else if (endpoint === listed.syncEndpoint) messages.push("선택 현장 주소가 현재 공개 목록의 연결 주소와 같습니다.");
+    else if (!fixed && endpoint) messages.push("이 기기의 현장 주소가 현재 공개 목록의 주소와 다릅니다. 오래된 연결일 수 있지만 이름만으로 같은 현장인지 확인할 수 없습니다. 관리자에게 기존 시트와 연결 주소 확인을 요청해주세요.");
+  } else messages.push("공개 목록을 받지 못해 저장된 주소와 비교하지 못했습니다. 네트워크를 확인하고 외부 브라우저에서도 점검해주세요.");
+  if (results.health.status === "fulfilled" && results.health.value.configured === true) messages.push("목록 서버의 공개 상태 응답은 정상입니다.");
+  else if (results.health.status === "fulfilled") messages.push("목록 서버 설정이 완료되지 않았습니다. 관리자 확인이 필요합니다.");
+  else messages.push("목록 서버의 공개 상태 응답을 확인하지 못했습니다. 서버 장애나 브라우저 차단 여부는 이 결과만으로 판단할 수 없습니다.");
+  messages.push("비밀번호 로그인과 실제 시트 접근은 아직 확인하지 않았습니다. 설정·기록은 변경하지 않았습니다. 기기 데이터나 캐시를 삭제하지 마세요.");
+  return messages.join(" ");
+}
+
+async function checkProjectConnection() {
+  const projectName = elements.accessProjectSelect.value;
+  const endpoint = selectedProjectEndpoint(projectName);
+  const sequence = ++connectionCheckSequence;
+  if (!window.ProjectDirectory?.enabled || !window.ProjectDirectory.health) {
+    elements.connectionStatus.textContent = "목록 서버 연결 점검을 사용할 수 없습니다. 관리자에게 앱의 연결 설정을 확인해주세요. 현장 설정과 기록은 변경하지 않았습니다.";
+    return;
+  }
+  elements.connectionCheckButton.disabled = true;
+  elements.connectionStatus.textContent = `${projectName} 연결 정보 확인 중… 비밀번호와 업무 자료는 전송하지 않습니다.`;
+  try {
+    // Only public reads against the configured directory. Do not probe an unknown
+    // saved endpoint, authenticate, refresh/merge projects, or persist any state.
+    const [health, projects] = await Promise.allSettled([
+      window.ProjectDirectory.health(), window.ProjectDirectory.list()
+    ]);
+    if (sequence !== connectionCheckSequence || projectName !== elements.accessProjectSelect.value) return;
+    if (endpoint !== selectedProjectEndpoint(projectName)) {
+      elements.connectionStatus.textContent = "점검 중 현장 연결 정보가 변경되었습니다. 다시 점검해주세요. 이 점검은 현장 설정과 기록을 변경하지 않습니다.";
+      return;
+    }
+    elements.connectionStatus.textContent = projectConnectionMessage(projectName, endpoint, { health, projects });
+  } finally {
+    if (sequence === connectionCheckSequence) elements.connectionCheckButton.disabled = false;
   }
 }
 
@@ -3742,15 +3808,22 @@ async function restoreFromGoogleSheet(options = {}) {
 function loadSheetBackupJsonp(accessKey = getAccessKey()) {
   return new Promise((resolve, reject) => {
     const endpoint = getSyncEndpoint();
+    const projectName = getActiveProjectName();
     const callbackName = `sheetBackup_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const separator = endpoint.includes("?") ? "&" : "?";
     const script = document.createElement("script");
-    const timer = window.setTimeout(() => cleanup(reject, new Error("timeout")), 15000);
+    let settled = false;
+    const connectionError = (code, message) => Object.assign(new Error(`${projectName}: ${message} 선택 현장 연결 점검을 실행해주세요. 카카오톡에서만 반복되면 같은 링크를 외부 브라우저에서 열어 비교해주세요. 기기 기록이나 캐시를 삭제하지 마세요.`), { code });
+    const timer = window.setTimeout(() => cleanup(reject, connectionError("TIMEOUT", "서버 응답이 15초 안에 도착하지 않았습니다. 잠시 후 다시 시도해주세요.")), 15000);
 
     function cleanup(done, value) {
+      if (settled) return;
+      settled = true;
       window.clearTimeout(timer);
       script.remove();
-      delete window[callbackName];
+      // Ignore an already queued Google response after timeout/error.
+      window[callbackName] = () => {};
+      window.setTimeout(() => delete window[callbackName], 60000);
       done(value);
     }
 
@@ -3759,8 +3832,8 @@ function loadSheetBackupJsonp(accessKey = getAccessKey()) {
       else cleanup(reject, new Error(payload?.message || (payload?.code === "UNAUTHORIZED" ? "프로젝트 비밀번호가 올바르지 않습니다." : "동기화에 실패했습니다.")));
     };
 
-    script.onerror = () => cleanup(reject, new Error("load failed"));
-    script.src = `${endpoint}${separator}action=load&project=${encodeURIComponent(getActiveProjectName())}&accessKey=${encodeURIComponent(accessKey)}&callback=${encodeURIComponent(callbackName)}`;
+    script.onerror = () => cleanup(reject, connectionError("LOAD_FAILED", "서버 응답을 불러오지 못했습니다. 네트워크·브라우저 또는 연결 주소 확인이 필요합니다. 이 오류만으로 비밀번호가 틀렸다고 판단할 수 없습니다."));
+    script.src = `${endpoint}${separator}action=load&project=${encodeURIComponent(projectName)}&accessKey=${encodeURIComponent(accessKey)}&callback=${encodeURIComponent(callbackName)}`;
     document.body.append(script);
   });
 }

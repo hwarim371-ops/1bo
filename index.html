@@ -10,7 +10,7 @@
   <title>화림 업무전산시스템</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=20261002">
+  <link rel="stylesheet" href="styles.css?v=20261016-connection-check">
 </head>
 <body>
   <section class="access-gate" id="accessGate" aria-labelledby="accessTitle">
@@ -36,6 +36,8 @@
         <button class="secondary-btn" data-refresh-projects type="button">목록 새로고침</button>
       </div>
       <p class="settings-help" data-project-directory-status role="status">새 현장은 구글 관리자 계정으로 생성합니다.</p>
+      <button class="secondary-btn" id="connectionCheckButton" type="button">선택 현장 연결 점검</button>
+      <p class="settings-help" id="connectionStatus" role="status" aria-live="polite">비밀번호 없이 연결 정보를 점검합니다. 현장 설정과 기록은 변경하지 않습니다.</p>
     </form>
   </section>
 
@@ -664,8 +666,8 @@
   </template>
 
   <script src="app-config.js"></script>
-  <script src="project-directory.js?v=20261002"></script>
+  <script src="project-directory.js?v=20261016-connection-check"></script>
   <script src="sheet-data.js"></script>
-  <script src="app.js?v=20261002"></script>
+  <script src="app.js?v=20261016-connection-check"></script>
 </body>
 </html>
