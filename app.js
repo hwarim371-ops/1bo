@@ -1,4 +1,5 @@
 const STORAGE_KEY = "jecheon-field-app-v2";
+const WORK_DRAFT_KEY = STORAGE_KEY + "-work-drafts";
 const REQUIRED_SCRIPT_VERSION = "secure-sync-2026-06-12";
 const appConfig = window.APP_CONFIG || {};
 const sourceData = window.SHEET_DATA || {};
@@ -22,12 +23,12 @@ const kindLabels = {
 };
 
 const syncLabels = {
-  synced: "시트",
-  sent: "시트저장",
-  local: "저장대기",
-  sending: "전송중",
-  failed: "전송대기",
-  conflict: "충돌확인"
+  synced: "저장 완료",
+  sent: "저장 완료",
+  local: "기기 보관",
+  sending: "전송 중",
+  failed: "다시 보내기 필요",
+  conflict: "다른 수정 확인 필요"
 };
 const DEFAULT_PAYMENT_STATUS = "외상";
 
@@ -58,6 +59,7 @@ const seedState = {
 };
 
 let storageLoadFailed = false;
+let draftStorageFailed = false;
 let state = loadState();
 const elements = {};
 let savingWork = false;
@@ -80,6 +82,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   initializeDefaults();
   renderAll();
+  window.FieldUI?.refresh();
   registerServiceWorker();
   await showProjectAccessGate(getActiveProjectName());
   refreshProjectDirectory();
@@ -274,7 +277,7 @@ function bindEvents() {
     if (document.hidden) return;
     isoToday = toISODate(new Date());
     elements.todayLabel.textContent = "오늘 " + formatDate(isoToday);
-    renderSummary();
+    if (state.activeView === "summary") renderSummary();
   });
   document.querySelector("#retryPendingButton").addEventListener("click", () => retryPendingRecords());
   document.querySelector("#backupLocalButton").addEventListener("click", downloadLocalBackup);
@@ -345,6 +348,7 @@ function bindEvents() {
   elements.resourceRows.addEventListener("input", (event) => {
     if (event.target.matches(".resource-cost")) {
       event.target.dataset.auto = "false";
+      window.FieldUI?.updateMoneyHint(event.target);
     }
   });
 
@@ -699,16 +703,20 @@ function renderAll() {
   renderProjectOptions();
   renderOptions();
   renderKindFields();
-  renderResourceRows();
   renderDrafts();
   renderMetrics();
-  renderLogs();
-  renderMaterialCards();
-  renderMaterialTable();
-  renderSummary();
-  renderSettings();
+  renderCurrentView();
   renderSyncState();
   renderEditState();
+  window.FieldUI?.refresh();
+}
+
+function renderCurrentView() {
+  if (state.activeView === "logs") renderLogs();
+  if (state.activeView === "materials") renderMaterialTable();
+  if (state.activeView === "materialInput") renderMaterialCards();
+  if (state.activeView === "summary") renderSummary();
+  if (state.activeView === "settings") renderSettings();
 }
 
 function renderProjectOptions() {
@@ -728,6 +736,7 @@ function renderNavigation() {
 
   elements.navItems.forEach((button) => {
     button.classList.toggle("active", button.dataset.view === state.activeView);
+    button.setAttribute("aria-current", button.dataset.view === state.activeView ? "page" : "false");
   });
 
   elements.views.forEach((view) => {
@@ -751,10 +760,10 @@ function setView(viewName) {
   if (state.activeView === "materials") materialSheetEditMode = Object.keys(sheetEdits("material")).length > 0;
   saveState();
   renderNavigation();
-  renderLogs();
-  renderMaterialTable();
+  renderCurrentView();
   renderMetrics();
   renderEditState();
+  window.FieldUI?.refresh();
 }
 
 function renderOptions() {
@@ -875,16 +884,16 @@ function renderResourceRows() {
       <label class="resource-work-field">
         <span>투입공수</span>
         <select class="resource-work">
-          <option value="1">일공수</option>
-          <option value="0.5">반공수</option>
+          <option value="1">하루 (1공수)</option>
+          <option value="0.5">반나절 (0.5공수)</option>
         </select>
       </label>
       <label class="resource-cost-field">
-        <span>비용</span>
-        <input class="resource-cost" type="number" min="0" step="1" data-auto="${prior.costAuto === false ? "false" : "true"}">
+        <span>금액 (원)</span>
+        <input class="resource-cost" type="number" min="0" step="1" inputmode="numeric" data-money data-auto="${prior.costAuto === false ? "false" : "true"}">
       </label>
       <label class="resource-payment-field">
-        <span>결제여부</span>
+        <span>지급 상태</span>
         <select class="resource-payment"></select>
       </label>
     `;
@@ -906,12 +915,16 @@ function renderResourceRows() {
     elements.resourceRows.append(row);
     updateResourceRowCost(row);
   }
+  window.FieldUI?.refresh();
 }
 
 function updateResourceRowCost(row) {
   if (!row) return;
   const costInput = row.querySelector(".resource-cost");
-  if (costInput.value && costInput.dataset.auto === "false") return;
+  if (costInput.value && costInput.dataset.auto === "false") {
+    window.FieldUI?.updateMoneyHint(costInput);
+    return;
+  }
 
   const item = row.querySelector(".resource-item")?.value || "";
   const workAmount = numberOrBlank(row.querySelector(".resource-work")?.value);
@@ -920,6 +933,12 @@ function updateResourceRowCost(row) {
     : { equipment: item, workAmount };
   costInput.value = estimateCost(entry) || "";
   costInput.dataset.auto = "true";
+  window.FieldUI?.updateMoneyHint(costInput);
+}
+
+function showInputError(input, message) {
+  if (window.FieldUI) window.FieldUI.inputError(input, message);
+  else window.alert(message);
 }
 
 function buildEntriesFromForm() {
@@ -928,13 +947,13 @@ function buildEntriesFromForm() {
   const subProcess = elements.subProcess.value;
 
   if (!formDate || !mainProcess || !subProcess) {
-    window.alert("날짜, 주공정, 부공정을 먼저 선택해주세요.");
+    showInputError(!formDate ? elements.entryDate : !mainProcess ? elements.mainProcess : elements.subProcess, "날짜, 주공정, 부공정을 먼저 선택해주세요.");
     return null;
   }
 
   const rows = Array.from(elements.resourceRows.querySelectorAll(".resource-row"));
   if (rows.some((row) => !row.querySelector(".resource-cost").validity.valid || parseAmount(row.querySelector(".resource-cost").value) < 0)) {
-    window.alert("비용에는 0 이상의 숫자를 입력해주세요.");
+    showInputError(rows.find((row) => !row.querySelector(".resource-cost").validity.valid || parseAmount(row.querySelector(".resource-cost").value) < 0)?.querySelector(".resource-cost"), "금액은 원 단위로, 0 이상의 숫자를 입력해주세요.");
     return null;
   }
   if (rows.length === 0) {
@@ -975,7 +994,7 @@ function buildEntriesFromForm() {
   });
 
   if (entries.some((entry) => !entry.equipment && !entry.labor)) {
-    window.alert("비어 있는 인력 또는 장비 항목이 있습니다.");
+    showInputError(rows.find((row) => !row.querySelector(".resource-item").value)?.querySelector(".resource-item"), "인력 또는 장비를 선택해주세요.");
     return null;
   }
 
@@ -1076,6 +1095,9 @@ function updateRecordsSyncStatus(field, saved, status, key) {
   if (status === "sent") state.lastSync = new Date().toISOString();
   saveState();
   renderSyncState();
+  window.FieldUI?.saveResult(status === "sent"
+    ? `${field === "entries" ? "업무" : "자재"} ${saved.length}건을 구글시트에 저장했습니다.`
+    : "구글시트 저장을 확인하지 못했습니다. 내용은 이 기기에 보관되어 있습니다. ‘미전송 다시 저장’을 눌러주세요.", status !== "sent");
 }
 
 function pendingRecords() {
@@ -1247,7 +1269,7 @@ function rememberWorkForm() {
       payment: row.querySelector(".resource-payment").value
     }))
   };
-  saveState();
+  saveWorkForms();
 }
 
 function restoreWorkForm() {
@@ -1276,6 +1298,7 @@ function restoreWorkForm() {
   });
   autoResizeWorkTextarea(elements.detailProcess);
   autoResizeWorkTextarea(elements.entryMemo);
+  window.FieldUI?.refresh();
 }
 
 function renderDrafts() {
@@ -1403,6 +1426,7 @@ function renderLogs() {
   currentLogRows = rows;
   renderWorkTableSummary(rows);
   elements.logTableBody.innerHTML = "";
+  const pageRows = window.FieldUI?.pageRows(rows, "work", [getActiveProjectName(), startFilter, endFilter, processFilter, quickDate, quickMain, quickSub, detailText, quickEquipment, quickLabor, quickPayment, memoText], renderLogs) || rows;
 
   if (rows.length === 0) {
     const row = document.createElement("tr");
@@ -1411,7 +1435,7 @@ function renderLogs() {
     return;
   }
 
-  rows.forEach((entry) => {
+  pageRows.forEach((entry) => {
     const tr = document.createElement("tr");
     tr.dataset.recordId = entry.id;
     if (logSheetEditMode) {
@@ -1450,14 +1474,16 @@ function renderLogs() {
       <td>${statusDotHtml(entry.status)}</td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn split" type="button" title="장비대/인건비 분할" data-split-cost="${entry.id}" ${canManage && canSplitEquipmentEntry(entry) ? "" : "disabled"}>분</button>
-          <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage ? "" : "disabled"}>X</button>
+          <button class="icon-btn approve" type="button" data-edit="${entry.id}" ${canManage ? "" : "disabled"}>수정</button>
+          <button class="icon-btn split" type="button" title="장비대/인건비 분할" data-split-cost="${entry.id}" ${canManage && canSplitEquipmentEntry(entry) ? "" : "disabled"}>비용 나누기</button>
+          <button class="icon-btn delete" type="button" title="삭제" data-delete="${entry.id}" ${canManage ? "" : "disabled"}>삭제</button>
         </div>
       </td>
     `;
     elements.logTableBody.append(tr);
   });
   appendWorkTotalRow(rows);
+  window.FieldUI?.enhanceTable(elements.logTableBody, "work");
 
   elements.logTableBody.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => beginEntryEdit(button.dataset.edit));
@@ -1505,7 +1531,7 @@ function isExpandableDetailText(value) {
 function renderWorkTableSummary(rows) {
   const totals = workTableTotals(rows);
   renderTableSummaryCards(elements.logTableSummary, [
-    { label: "표시 행", value: `${rows.length}건` },
+    { label: "검색 결과 전체", value: `${rows.length}건` },
     { label: "총 투입공수", value: formatWorkAmountNumber(totals.workAmount) },
     { label: "인건비 합계", value: formatMoney(totals.laborCost) },
     { label: "장비대 합계", value: formatMoney(totals.equipmentCost) },
@@ -1585,9 +1611,10 @@ async function applyContractDistribution() {
 
   const total = normalizeContractAmount(elements.contractTotalAmount.value);
   if (!total) {
-    window.alert("총 도급금액을 입력해주세요. 예: 210 또는 2100000");
+    window.alert("총 도급금액을 원 단위로 입력해주세요. 예: 210만원은 2100000");
     return;
   }
+  if (!window.confirm(`선택한 ${selected.length}건을 총 ${formatMoney(total)}으로 분배할까요? 입력 단위는 원입니다.`)) return;
 
   const byDate = new Map();
   selected.forEach((entry) => {
@@ -1698,8 +1725,7 @@ function contractSelectedEntries() {
 
 function normalizeContractAmount(value) {
   const number = numberOrBlank(String(value ?? "").replaceAll(",", ""));
-  if (!number) return 0;
-  return number < 10000 ? number * 10000 : number;
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
 function selectedOptionLabel(select) {
@@ -1742,8 +1768,8 @@ function selectedBulkFieldName(field) {
 
 function statusDotHtml(status, label) {
   const text = label || syncLabels[status] || status || "상태";
-  const tone = status === "failed" ? "red" : ["local", "sending"].includes(status) ? "yellow" : "green";
-  return `<span class="status-dot-badge ${tone}" title="${escapeAttr(text)}" aria-label="${escapeAttr(text)}"></span>`;
+  const tone = ["failed", "conflict"].includes(status) ? "red" : ["local", "sending"].includes(status) ? "yellow" : "green";
+  return `<span class="sync-record-status"><span class="status-dot-badge ${tone}" aria-hidden="true"></span>${escapeHtml(text)}</span>`;
 }
 
 function renderEntryEditRow(entry) {
@@ -2028,7 +2054,7 @@ async function splitEquipmentCost(id) {
 
   const currentCost = amountOf(original.cost);
   const rawLaborCost = window.prompt(
-    `인건비로 분리할 금액을 입력하세요.\n현재 장비대: ${formatMoney(currentCost)}\n예: 30 또는 300000`,
+    `인건비로 분리할 금액을 원 단위로 입력하세요.\n현재 장비대: ${formatMoney(currentCost)}\n예: 30만원은 300000`,
     ""
   );
   if (rawLaborCost === null) return;
@@ -2090,7 +2116,7 @@ async function splitEquipmentCost(id) {
 }
 
 async function applyLogBulkEdit() {
-  if (state.editingEntryId) {
+  if (state.editingEntryId || logSheetEditMode) {
     window.alert("수정 중인 업무현황 행을 저장하거나 취소한 뒤 일괄수정해주세요.");
     return;
   }
@@ -2112,7 +2138,7 @@ async function applyLogBulkEdit() {
   }
 
   const displayValue = bulkDisplayValue(parsed.value);
-  const confirmed = window.confirm(`현재 화면에 표시된 업무현황 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요?`);
+  const confirmed = window.confirm(`검색 결과 전체 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요? 다른 페이지의 항목도 포함됩니다.\n${bulkPreview(targets, field, parsed.value)}`);
   if (!confirmed) return;
 
   const now = new Date().toISOString();
@@ -2160,10 +2186,10 @@ async function commitMaterialOrder() {
     updatedAt: editId ? new Date().toISOString() : ""
   };
 
-  try { validateMaterialAmounts(order); } catch (error) { window.alert(error.message); return; }
+  try { validateMaterialAmounts(order); } catch (error) { showInputError(elements.materialCreditAmount, error.message); return; }
 
   if (!order.process || !order.product) {
-    window.alert("공정과 제품명을 입력해주세요.");
+    showInputError(!order.process ? elements.materialProcess : elements.materialProduct, "공정과 제품명을 입력해주세요.");
     return;
   }
 
@@ -2204,6 +2230,7 @@ function clearMaterialForm() {
   elements.materialCreditAmount.value = "";
   elements.materialMemo.value = "";
   renderEditState();
+  window.FieldUI?.refresh();
 }
 
 function beginMaterialEdit(id) {
@@ -2310,9 +2337,17 @@ async function applyMaterialBulkEdit() {
   const label = selectedOptionLabel(elements.materialBulkField);
   const parsed = readBulkValue(field, elements.materialBulkValue.value, ["orderAmount", "lowPrice", "highPrice", "creditAmount"], ["process", "product"]);
   if (!parsed.ok) return;
+  if (["orderAmount", "creditAmount", "lowPrice", "highPrice"].includes(field)) {
+    try {
+      targets.forEach((order) => validateMaterialAmounts({ ...order, [field]: parsed.value }));
+    } catch (error) {
+      showInputError(elements.materialBulkValue, "일괄수정을 적용하지 않았습니다. " + error.message);
+      return;
+    }
+  }
 
   const displayValue = bulkDisplayValue(parsed.value);
-  const confirmed = window.confirm(`현재 화면에 표시된 자재현황 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요?`);
+  const confirmed = window.confirm(`검색 결과 전체 ${targets.length}건의 [${label}] 값을 "${displayValue}"(으)로 바꿀까요? 다른 페이지의 항목도 포함됩니다.\n${bulkPreview(targets, field, parsed.value)}`);
   if (!confirmed) return;
 
   const now = new Date().toISOString();
@@ -2368,10 +2403,11 @@ function renderEditState() {
   elements.logEditBar.classList.toggle("hidden", !editingLogTable);
   elements.logEditBar.querySelector("strong").textContent = logSheetEditMode ? "업무현황 표 수정모드" : "업무현황 수정 중";
   elements.logEditBar.querySelector("span").textContent = logSheetEditMode ? "수정 임시보관 " + Object.keys(sheetEdits("work")).length + "건 · 필터를 바꿔도 유지됩니다. 완료를 눌러 저장하세요." : "표 안의 값을 고친 뒤 저장하세요.";
-  elements.logInlineSaveButton.textContent = logSheetEditMode ? "완료" : "수정 저장";
+  const workChanges = Object.keys(sheetEdits("work")).length;
+  elements.logInlineSaveButton.textContent = logSheetEditMode ? (workChanges ? `변경 ${workChanges}건 저장` : "수정 마치기") : "수정 저장";
   elements.logInlineCancelButton.textContent = logSheetEditMode ? "수정모드 취소" : "취소";
   if (elements.toggleLogSheetEditButton) {
-    elements.toggleLogSheetEditButton.textContent = logSheetEditMode ? "완료" : "표 수정모드";
+    elements.toggleLogSheetEditButton.textContent = logSheetEditMode ? elements.logInlineSaveButton.textContent : "수정모드";
     elements.toggleLogSheetEditButton.disabled = editingEntry;
     elements.toggleLogSheetEditButton.classList.toggle("active", logSheetEditMode);
   }
@@ -2380,10 +2416,11 @@ function renderEditState() {
   elements.materialEditBar.classList.toggle("hidden", !editingMaterialTable);
   elements.materialEditBar.querySelector("strong").textContent = materialSheetEditMode ? "자재현황 표 수정모드" : "자재현황 수정 중";
   elements.materialEditBar.querySelector("span").textContent = materialSheetEditMode ? "수정 임시보관 " + Object.keys(sheetEdits("material")).length + "건 · 필터를 바꿔도 유지됩니다. 완료를 눌러 저장하세요." : "표 안의 값을 고친 뒤 저장하세요.";
-  elements.materialInlineSaveButton.textContent = materialSheetEditMode ? "완료" : "수정 저장";
+  const materialChanges = Object.keys(sheetEdits("material")).length;
+  elements.materialInlineSaveButton.textContent = materialSheetEditMode ? (materialChanges ? `변경 ${materialChanges}건 저장` : "수정 마치기") : "수정 저장";
   elements.materialInlineCancelButton.textContent = materialSheetEditMode ? "수정모드 취소" : "취소";
   if (elements.toggleMaterialSheetEditButton) {
-    elements.toggleMaterialSheetEditButton.textContent = materialSheetEditMode ? "완료" : "표 수정모드";
+    elements.toggleMaterialSheetEditButton.textContent = materialSheetEditMode ? elements.materialInlineSaveButton.textContent : "수정모드";
     elements.toggleMaterialSheetEditButton.disabled = editingMaterial;
     elements.toggleMaterialSheetEditButton.classList.toggle("active", materialSheetEditMode);
   }
@@ -2459,6 +2496,7 @@ function renderMaterialTable() {
   currentMaterialRows = rows;
   renderMaterialTableSummary(rows);
   elements.materialTableBody.innerHTML = "";
+  const pageRows = window.FieldUI?.pageRows(rows, "material", [getActiveProjectName(), startFilter, endFilter, processFilter, quickDate, quickProcess, productText, vendorText, areaText, memoText, search], renderMaterialTable) || rows;
   if (rows.length === 0) {
     const row = document.createElement("tr");
     row.innerHTML = `<td colspan="12">${emptyState().outerHTML}</td>`;
@@ -2466,7 +2504,7 @@ function renderMaterialTable() {
     return;
   }
 
-  rows.forEach((order) => {
+  pageRows.forEach((order) => {
     const tr = document.createElement("tr");
     tr.dataset.recordId = order.id;
     if (materialSheetEditMode) {
@@ -2497,14 +2535,15 @@ function renderMaterialTable() {
       <td>${statusDotHtml(order.status)}</td>
       <td>
         <div class="row-actions">
-          <button class="icon-btn approve" type="button" title="수정" data-edit-material="${order.id}">√</button>
-          <button class="icon-btn delete" type="button" title="삭제" data-delete-material="${order.id}">X</button>
+          <button class="icon-btn approve" type="button" title="수정" data-edit-material="${order.id}">수정</button>
+          <button class="icon-btn delete" type="button" title="삭제" data-delete-material="${order.id}">삭제</button>
         </div>
       </td>
     `;
     elements.materialTableBody.append(tr);
   });
   appendMaterialTotalRow(rows);
+  window.FieldUI?.enhanceTable(elements.materialTableBody, "material");
 
   elements.materialTableBody.querySelectorAll("[data-edit-material]").forEach((button) => {
     button.addEventListener("click", () => beginMaterialEdit(button.dataset.editMaterial));
@@ -2527,7 +2566,7 @@ function renderMaterialTable() {
 function renderMaterialTableSummary(rows) {
   const totals = materialTableTotals(rows);
   renderTableSummaryCards(elements.materialTableSummary, [
-    { label: "표시 행", value: `${rows.length}건` },
+    { label: "검색 결과 전체", value: `${rows.length}건` },
     { label: "발주 합계", value: formatMoney(totals.orderAmount), strong: true },
     { label: "현지출", value: formatMoney(totals.paidAmount) },
     { label: "외상 합계", value: formatMoney(totals.creditAmount) },
@@ -3309,6 +3348,7 @@ function openLedgerSource(row) {
   }
   const work = row.type === "work";
   (work ? elements.clearLogFilters : elements.clearMaterialFilters).click();
+  window.FieldUI?.revealRecord(work ? "work" : "material", row.id);
   setView(work ? "logs" : "materials");
   const body = work ? elements.logTableBody : elements.materialTableBody;
   const target = Array.from(body.querySelectorAll("[data-record-id]")).find((tr) => tr.dataset.recordId === row.id);
@@ -4311,8 +4351,7 @@ function normalizeMaterialOrders(materialOrders = []) {
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return clone(seedState);
-    const parsed = JSON.parse(raw);
+    const parsed = raw ? JSON.parse(raw) : {};
     const loaded = {
       ...clone(seedState),
       ...parsed,
@@ -4331,6 +4370,17 @@ function loadState() {
       editingEntryId: "",
       editingMaterialId: ""
     };
+    try {
+      const drafts = localStorage.getItem(WORK_DRAFT_KEY);
+      if (drafts) {
+        const cached = JSON.parse(drafts);
+        if (!cached || typeof cached.baseRevision !== "string" || !cached.workForms || typeof cached.workForms !== "object" || Array.isArray(cached.workForms)) throw new Error("Invalid work drafts");
+        if (cached.baseRevision === (loaded._draftRevision || "")) loaded.workForms = cached.workForms;
+      }
+    } catch {
+      if (!draftStorageFailed) window.alert("입력 중 메모의 임시 보관본을 읽지 못했습니다. 기존 업무·자재 자료는 유지되며, 마지막으로 보관된 입력 내용을 사용합니다.");
+      draftStorageFailed = true;
+    }
     loaded.config = normalizeConfig(loaded.config);
     if (loaded.syncEndpoint && loaded.projects[0] && !loaded.projects[0].syncEndpoint) {
       loaded.projects[0].syncEndpoint = loaded.syncEndpoint;
@@ -4364,11 +4414,30 @@ function saveState() {
         }
       });
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    // A single committed revision also invalidates older typing caches after a save or clear.
+    const revision = cryptoId();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, _draftRevision: revision }));
+    state._draftRevision = revision;
   } catch (error) {
     window.alert("기기 저장에 실패했습니다. 화면을 닫거나 새로고침하지 말고 기기 백업을 내려받아 주세요.");
     throw error;
   }
+}
+
+// Draft text is small and device-local; typing must not serialize every project record.
+function saveWorkForms() {
+  if (storageLoadFailed) throw new Error("기기 저장자료를 확인해주세요.");
+  if (draftStorageFailed) return saveState();
+  try {
+    localStorage.setItem(WORK_DRAFT_KEY, JSON.stringify({ baseRevision: state._draftRevision || "", workForms: state.workForms }));
+  } catch (error) {
+    window.alert("작성 중인 내용을 기기에 보관하지 못했습니다. 화면을 닫지 말고 백업을 확인해주세요.");
+    throw error;
+  }
+}
+
+function bulkPreview(rows, field, value) {
+  return rows.slice(0, 3).map((row) => `${formatDate(row.date)}: ${String(row[field] ?? "(빈 값)").slice(0, 50)} → ${String(value).slice(0, 50)}`).join("\n") + (rows.length > 3 ? `\n외 ${rows.length - 3}건` : "");
 }
 
 function toISODate(date) {
