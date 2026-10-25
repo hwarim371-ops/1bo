@@ -20,9 +20,10 @@ function backend() {
     };
   }
   const context = vm.createContext({ console: {log(){}},
+    Date: class extends Date { static now() { return now; } },
     CacheService: {getScriptCache:()=>({get:k=>attempts.get(k)?.until>now?attempts.get(k).value:null,put:(k,value,ttl)=>attempts.set(k,{value,until:now+ttl*1000}),remove:k=>attempts.delete(k)})},
     Session: { getActiveUser: () => ({getEmail:()=>active}), getEffectiveUser: () => ({getEmail:()=>"owner@example.test"}) },
-    PropertiesService: {getScriptProperties:()=>({getProperty:k=>properties.get(k)||null,setProperty:(k,v)=>properties.set(k,v),getProperties:()=>Object.fromEntries(properties)})},
+    PropertiesService: {getScriptProperties:()=>({getProperty:k=>properties.get(k)||null,setProperty:(k,v)=>properties.set(k,v),deleteProperty:k=>properties.delete(k),getProperties:()=>Object.fromEntries(properties)})},
     Utilities: {DigestAlgorithm:{SHA_256:1},Charset:{UTF_8:1},getUuid:()=>crypto.randomUUID(),computeDigest:(_,text)=>[...crypto.createHash("sha256").update(text).digest()]},
     SpreadsheetApp: { getActiveSpreadsheet:()=>null,flush(){},openById:id=>{assert.ok(sheets.has(id)); return sheets.get(id)},create(){creates++;if(failCreate)throw new Error("network interrupted");const id="sheet-"+creates,tabs=new Map();const ss={getId:()=>id,setSpreadsheetTimeZone(){},getSheetByName:n=>tabs.get(n),insertSheet:n=>{const tab=sheet();tabs.set(n,tab);return tab}};sheets.set(id,ss);return ss;} },
     LockService: {getScriptLock:()=>({waitLock(){const fn=onLock;onLock=null;fn?.()},releaseLock(){},hasLock:()=>true})},
@@ -32,14 +33,17 @@ function backend() {
   const run = code => vm.runInContext(code,context);
   run(fs.readFileSync(path.join(__dirname,"..","password-throttle.gs"),"utf8"));
   run(fs.readFileSync(path.join(__dirname,"..","project-connector.gs"),"utf8"));
+  run(fs.readFileSync(path.join(__dirname,"..","admin-auth.gs"),"utf8"));
   run("setupConnector()");
-  const input = {name:"새 현장",password:"test-only-password",requestId:"request-test-123456789"};
+  run('setupAdministrator({password:"0123",confirm:"0123"})');
+  const token = run('loginAdministrator("0123").token');
+  const input = {adminToken:token,name:"새 현장",password:"test-only-password",requestId:"request-test-123456789"};
   const create = (overrides={}) => {context.input={...input,...overrides}; return run("createManagedProject(input)")};
   const auth = {project:input.name,accessKey:crypto.createHash("sha256").update(input.password).digest("hex")};
   const get = (params={}) => {context.params={action:"load",...auth,...params};return JSON.parse(run("doGet({parameter:params}).text"))};
   const post = data => {context.body=JSON.stringify({...auth,...data});return JSON.parse(run("doPost({postData:{contents:body}}).text"))};
-  const change = (overrides={}) => {context.changeInput={name:input.name,password:"01234567",expectedRevision:0,...overrides};return run("changeManagedProjectPassword(changeInput)")};
-  return {run,create,get,post,change,properties,advance:ms=>now+=ms,creates:()=>creates,setActive:v=>active=v,failCreate:v=>failCreate=v,failSetup:v=>failSetup=v,onLock:fn=>onLock=fn};
+  const change = (overrides={}) => {context.changeInput={adminToken:token,name:input.name,password:"01234567",expectedRevision:0,...overrides};return run("changeManagedProjectPassword(changeInput)")};
+  return {run,create,get,post,change,properties,token,advance:ms=>now+=ms,creates:()=>creates,setActive:v=>active=v,failCreate:v=>failCreate=v,failSetup:v=>failSetup=v,onLock:fn=>onLock=fn};
 }
 
 test("new project provisions one sheet, idempotent retries never reset password",()=>{
@@ -47,8 +51,66 @@ test("new project provisions one sheet, idempotent retries never reset password"
   assert.throws(()=>b.create({password:"different-password"}),/비밀번호/);assert.equal(b.creates(),1);
   assert.throws(()=>b.create({requestId:"another-request-123456"}),/이미/);
 });
-test("anonymous callers cannot create projects or use owner RPC",()=>{
-  const b=backend();b.setActive("");assert.throws(()=>b.create(),/관리자/);assert.throws(()=>b.run("listManagedProjects()"),/관리자/);assert.equal(b.creates(),0);
+
+test("admin and project passwords are separate and four characters preserve leading zero",()=>{
+  const b=backend();b.create({password:"4567"});b.setActive("");
+  assert.equal(b.get({accessKey:accessKey("0123")}).ok,false);
+  assert.equal(b.get({accessKey:accessKey("4567")}).ok,true);
+  assert.throws(()=>b.run('loginAdministrator("4567")'),/올바르지/);
+  const result=b.run('loginAdministrator("0123")');assert.ok(result.token.length>=64);
+  assert.equal(b.post({action:"verifyAdministrator",adminToken:result.token}).ok,true);
+  assert.equal(b.post({action:"verifyAdministrator",adminToken:accessKey("4567")}).ok,false);
+  assert.ok(!b.properties.get("ADMINISTRATOR_V1").includes('"0123"'));
+});
+
+test("only owner can bootstrap admin, setup is not an overwrite or recovery endpoint",()=>{
+  const b=backend();const before=b.properties.get("ADMINISTRATOR_V1");
+  assert.throws(()=>b.run('setupAdministrator({password:"9876",confirm:"9876"})'),/이미/);
+  b.properties.delete("ADMINISTRATOR_V1");b.setActive("");
+  assert.throws(()=>b.run('setupAdministrator({password:"9876",confirm:"9876"})'),/관리자/);
+  assert.equal(b.properties.has("ADMINISTRATOR_V1"),false);
+  b.setActive("owner@example.test");
+  assert.throws(()=>b.run('setupAdministrator({password:"123",confirm:"123"})'),/4~128/);
+  assert.throws(()=>b.run('setupAdministrator({password:"1234",confirm:"9999"})'),/일치/);
+  b.run('setupAdministrator({password:"9876",confirm:"9876"})');
+  assert.notEqual(b.properties.get("ADMINISTRATOR_V1"),before);
+});
+
+test("admin sessions expire, logout revokes, and admin rotation revokes every prior session",()=>{
+  const b=backend();b.create();b.advance(900001);assert.throws(()=>b.change(),/만료/);
+  const a=b.run('loginAdministrator("0123").token');
+  b.run(`logoutAdministrator(${JSON.stringify(a)})`);
+  assert.throws(()=>b.change({adminToken:a}),/만료/);
+  const c=b.run('loginAdministrator("0123").token'),d=b.run('loginAdministrator("0123").token');
+  b.run(`changeAdministratorPassword({adminToken:${JSON.stringify(c)},password:"6789",confirm:"6789"})`);
+  assert.throws(()=>b.change({adminToken:c}),/만료/);assert.throws(()=>b.change({adminToken:d}),/만료/);
+  assert.throws(()=>b.run('loginAdministrator("0123")'),/올바르지/);
+  assert.ok(b.run('loginAdministrator("6789").token'));
+  assert.equal(b.get().ok,true);
+});
+
+test("five wrong administrator passwords lock login for fifteen minutes without locking project data",()=>{
+  const b=backend();b.create();
+  for(let i=0;i<5;i++)assert.throws(()=>b.run('loginAdministrator("wrong")'),/비밀번호/);
+  assert.throws(()=>b.run('loginAdministrator("0123")'),/15분/);
+  assert.equal(b.get().ok,true);
+  b.advance(900001);assert.ok(b.run('loginAdministrator("0123").token'));
+  assert.equal(b.properties.has("ADMIN_LOGIN_FAILURES"),false);
+});
+
+test("administrator state is rechecked under the project mutation lock",()=>{
+  const b=backend();b.create();b.onLock(()=>b.run(`logoutAdministrator(${JSON.stringify(b.token)})`));
+  assert.throws(()=>b.change(),/만료/);assert.equal(b.get().ok,true);
+});
+
+test("administrator setup script compiles and never stores password in browser persistence",()=>{
+  const b=backend(),html=b.run('ADMIN_SETUP_HTML');new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);
+  assert.equal((html.match(/minlength="4"/g)||[]).length,2);
+  assert.ok(!/localStorage|sessionStorage/.test(html));
+  b.setActive("");assert.throws(()=>b.run('administratorSetupPage_()'),/관리자/);
+});
+test("callers without admin sessions cannot create projects; setup remains owner-only",()=>{
+  const b=backend();b.setActive("");assert.throws(()=>b.create({adminToken:""}),/관리자/);assert.throws(()=>b.run("listManagedProjects()"),/관리자/);assert.equal(b.creates(),0);
   b.setActive("someone@example.test");assert.throws(()=>b.run("setupConnector()"),/소유자/);
 });
 test("legacy names and passwords outside 4-128 characters are rejected without writes",()=>{
@@ -60,9 +122,9 @@ test("four digits preserve leading zero; longer passwords remain supported",()=>
   const b=backend();b.create({password:"0123"});assert.equal(b.get({accessKey:accessKey("0123")}).ok,true);assert.equal(b.get({accessKey:accessKey("123")}).ok,false);
   const long=backend();long.create({password:"x".repeat(128)});assert.equal(long.get({accessKey:accessKey("x".repeat(128))}).ok,true);
 });
-test("password changes are owner-only and cannot use the public data endpoint",()=>{
+test("password changes require admin session and cannot use the project data endpoint",()=>{
   const b=backend();b.create();const before=[...b.properties];
-  for(const user of ["","someone@example.test"]){b.setActive(user);assert.throws(()=>b.change(),/관리자/)}
+  for(const user of ["","someone@example.test"]){b.setActive(user);assert.throws(()=>b.change({adminToken:""}),/관리자/)}
   assert.equal(b.post({type:"changeManagedProjectPassword",password:"0123"}).ok,false);
   assert.deepEqual([...b.properties],before);assert.equal(b.get().ok,true);
 });
@@ -100,7 +162,7 @@ test("queued writes recheck credentials after a concurrent password change",()=>
 });
 test("manager scripts compile and all password inputs require four characters",()=>{
   const html=backend().run("MANAGER_HTML");const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];new vm.Script(script);
-  assert.equal((html.match(/minlength="4"/g)||[]).length,4);assert.ok(!html.includes('minlength="8"'));
+  assert.equal((html.match(/minlength="4"/g)||[]).length,7);assert.ok(!html.includes('minlength="8"'));
 });
 test("previously configured four-digit credentials remain valid until owner changes them",()=>{
   const b=backend();b.create();const key=[...b.properties.keys()].find(k=>k.startsWith("PROJECT_")),project=JSON.parse(b.properties.get(key));
