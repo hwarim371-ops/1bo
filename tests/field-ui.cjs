@@ -148,7 +148,7 @@ test("list font sizes are independent, persisted and never recreate record nodes
 
 test("list font preference accepts only known sizes and handles disabled storage", () => {
   const {api, storage, views, context} = ui();
-  for (const size of ["14", "16", "18", "20", "22", "24", "28"]) {
+  for (const size of ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "22", "24", "28"]) {
     api.setListTextSize("work", size, false);
     assert.equal(views["view-logs"].dataset.listTextSize, size);
   }
@@ -160,6 +160,28 @@ test("list font preference accepts only known sizes and handles disabled storage
   context.localStorage.setItem = () => {throw new Error("blocked");};
   assert.doesNotThrow(() => api.setListTextSize("material", "24"));
   assert.equal(views["view-materials"].dataset.listTextSize, "24");
+});
+
+test("small list fonts use compact spacing independently and restore normal spacing", () => {
+  const {api, views, storage, nodes} = ui();
+  for (const size of ["8", "9", "10", "11", "12", "13"]) {
+    api.setListTextSize("work", size);
+    assert.equal(views["view-logs"].dataset.listCompact, "true");
+    assert.equal(views["view-logs"].style.getPropertyValue("--list-text-size"), size + "px");
+  }
+  api.setListTextSize("material", "8");
+  assert.equal(storage.get("hwarim-reading-size-material"), "8");
+  api.setListTextSize("work", "14");
+  assert.equal(views["view-logs"].dataset.listCompact, undefined);
+  assert.equal(views["view-materials"].dataset.listCompact, "true");
+  api.setListTextSize("material", "default");
+  assert.equal(views["view-materials"].dataset.listCompact, undefined);
+  for (const invalid of ["7", "8px", "15", "100"]) {
+    api.setListTextSize("work", invalid);
+    assert.equal(views["view-logs"].dataset.listCompact, undefined);
+    assert.equal(views["view-logs"].dataset.listTextSize, undefined);
+  }
+  assert.equal(nodes.length, 0);
 });
 
 test("money helper displays won and readable Korean units without changing values", () => {

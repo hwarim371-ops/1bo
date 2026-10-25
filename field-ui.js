@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const SIZE_KEY = "hwarim-reading-size";
-  const LIST_SIZES = [["default", "전체 글자 설정 따름"], ["14", "아주 작게 · 14"], ["16", "작게 · 16"], ["18", "보통 · 18"], ["20", "크게 · 20"], ["22", "더 크게 · 22"], ["24", "아주 크게 · 24"], ["28", "최대로 · 28"]];
+  const LIST_SIZES = [["default", "전체 글자 설정 따름"], ["8", "최소 · 8"], ["9", "한눈에 · 9"], ["10", "한눈에 · 10"], ["11", "한눈에 · 11"], ["12", "한눈에 · 12"], ["13", "한눈에 · 13"], ["14", "아주 작게 · 14"], ["16", "작게 · 16"], ["18", "보통 · 18"], ["20", "크게 · 20"], ["22", "더 크게 · 22"], ["24", "아주 크게 · 24"], ["28", "최대로 · 28"]];
   const PAGE_SIZE = 30;
   const pages = {};
   const expanded = new Set();
@@ -91,6 +91,8 @@
     const safe = LIST_SIZES.some(([value]) => value === size) ? size : "default";
     const view = document.getElementById(kind === "work" ? "view-logs" : "view-materials");
     if (!view) return;
+    if (Number(safe) >= 8 && Number(safe) < 14) view.dataset.listCompact = "true";
+    else delete view.dataset.listCompact;
     if (safe === "default") {
       view.removeAttribute("data-list-text-size");
       view.style.removeProperty("--list-text-size");

@@ -192,9 +192,18 @@ body .compact-view[data-list-text-size] .field-record-table :is(th, td, input, s
 }
 body .compact-view[data-list-text-size] .field-record-table td[data-label]::before,
 body .compact-view[data-list-text-size] .detail-process-preview::after {
-  font-size: max(14px, calc(var(--list-text-size) * .85));
+  font-size: max(8px, calc(var(--list-text-size) * .85));
 }
 body .compact-view[data-list-text-size] .table-summary-card :is(strong, span) { font-size: var(--list-text-size); }
+@media (min-width: 701px) {
+  body .compact-view[data-list-compact] .field-record-table { min-width: 0; }
+  body .compact-view[data-list-compact] .field-record-table :is(th, td) { min-width: 0; padding: 4px 6px; }
+  body .compact-view[data-list-compact] .field-record-table th { white-space: nowrap; }
+  body .compact-view[data-list-compact] .field-record-table .detail-process-cell { max-width: calc(var(--list-text-size) * 24); }
+  body .compact-view[data-list-compact] .field-record-table .sync-record-status { min-width: 0; gap: 3px; }
+  body .compact-view[data-list-compact] .field-record-table .row-actions button { min-height: 28px; padding: 4px 6px; }
+  body .compact-view[data-list-compact] .table-summary-card { padding: 6px 8px; }
+}
 @media (max-width: 700px) {
   .compact-view > .work-panel > .section-heading { flex-wrap: wrap; }
   .list-display-tools { width: 100%; }
