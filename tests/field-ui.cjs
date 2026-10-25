@@ -113,16 +113,54 @@ test("switching to input does not render hidden tables or summaries", () => {
 
 function ui() {
   const nodes = [];
+  const storage = new Map();
   function node(tag) {
     const e = { tag, children: [], handlers: {}, setAttribute() {}, append(...items) { this.children.push(...items); }, replaceChildren() { this.children = []; }, addEventListener(name, fn) { this.handlers[name] = fn; }, querySelectorAll(selector) { return this.children.filter(c => c.tag === selector); }, focus() {} };
     nodes.push(e);
     return e;
   }
-  const view = { querySelector: () => ({ before() {} }) };
-  const context = vm.createContext({ window: {}, document: { addEventListener() {}, createElement: node, getElementById: id => nodes.find(n => n.id === id) || (id.startsWith("view-") ? view : null) } });
+  const views = {};
+  for (const id of ["view-logs", "view-materials"]) {
+    const properties = new Map();
+    views[id] = { dataset: {}, style: { setProperty: (k, v) => properties.set(k, v), removeProperty: k => properties.delete(k), getPropertyValue: k => properties.get(k) || "" },
+      removeAttribute() { delete this.dataset.listTextSize; }, querySelector: () => ({ before() {} }) };
+  }
+  const context = vm.createContext({ window: {}, localStorage: {getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v)},
+    document: { addEventListener() {}, querySelector: () => null, createElement: node, getElementById: id => nodes.find(n => n.id === id) || views[id] || null } });
   vm.runInContext(fs.readFileSync(path.join(root, "field-ui.js"), "utf8"), context);
-  return { api: context.window.FieldUI, nodes };
+  return { api: context.window.FieldUI, nodes, views, storage, context };
 }
+
+test("list font sizes are independent, persisted and never recreate record nodes", () => {
+  const {api, views, storage, nodes} = ui();
+  api.setListTextSize("work", "14");
+  api.setListTextSize("material", "28");
+  assert.equal(views["view-logs"].style.getPropertyValue("--list-text-size"), "14px");
+  assert.equal(views["view-materials"].dataset.listTextSize, "28");
+  assert.equal(storage.get("hwarim-reading-size-work"), "14");
+  assert.equal(storage.get("hwarim-reading-size-material"), "28");
+  assert.equal(nodes.length, 0);
+  api.setListTextSize("work", "default");
+  assert.equal(views["view-logs"].dataset.listTextSize, undefined);
+  assert.equal(views["view-logs"].style.getPropertyValue("--list-text-size"), "");
+  assert.equal(views["view-materials"].dataset.listTextSize, "28");
+});
+
+test("list font preference accepts only known sizes and handles disabled storage", () => {
+  const {api, storage, views, context} = ui();
+  for (const size of ["14", "16", "18", "20", "22", "24", "28"]) {
+    api.setListTextSize("work", size, false);
+    assert.equal(views["view-logs"].dataset.listTextSize, size);
+  }
+  assert.equal(storage.size, 0);
+  api.setListTextSize("work", "100000px");
+  assert.equal(views["view-logs"].dataset.listTextSize, undefined);
+  api.setListTextSize("bad", "20");
+  assert.equal(storage.size, 1);
+  context.localStorage.setItem = () => {throw new Error("blocked");};
+  assert.doesNotThrow(() => api.setListTextSize("material", "24"));
+  assert.equal(views["view-materials"].dataset.listTextSize, "24");
+});
 
 test("money helper displays won and readable Korean units without changing values", () => {
   const { api } = ui();

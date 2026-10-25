@@ -6,7 +6,8 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const accessKey = password => crypto.createHash("sha256").update(password).digest("hex");
 function backend() {
-  const properties = new Map(), sheets = new Map();
+  const properties = new Map(), sheets = new Map(), attempts = new Map();
+  let now = 0;
   let active = "owner@example.test", creates = 0, failCreate = false, failSetup = false, onLock = null;
   function sheet() {
     const rows = [];
@@ -19,6 +20,7 @@ function backend() {
     };
   }
   const context = vm.createContext({ console: {log(){}},
+    CacheService: {getScriptCache:()=>({get:k=>attempts.get(k)?.until>now?attempts.get(k).value:null,put:(k,value,ttl)=>attempts.set(k,{value,until:now+ttl*1000}),remove:k=>attempts.delete(k)})},
     Session: { getActiveUser: () => ({getEmail:()=>active}), getEffectiveUser: () => ({getEmail:()=>"owner@example.test"}) },
     PropertiesService: {getScriptProperties:()=>({getProperty:k=>properties.get(k)||null,setProperty:(k,v)=>properties.set(k,v),getProperties:()=>Object.fromEntries(properties)})},
     Utilities: {DigestAlgorithm:{SHA_256:1},Charset:{UTF_8:1},getUuid:()=>crypto.randomUUID(),computeDigest:(_,text)=>[...crypto.createHash("sha256").update(text).digest()]},
@@ -28,6 +30,7 @@ function backend() {
     HtmlService: {createHtmlOutput:text=>({text,setTitle(){return this},addMetaTag(){return this}})}
   });
   const run = code => vm.runInContext(code,context);
+  run(fs.readFileSync(path.join(__dirname,"..","password-throttle.gs"),"utf8"));
   run(fs.readFileSync(path.join(__dirname,"..","project-connector.gs"),"utf8"));
   run("setupConnector()");
   const input = {name:"새 현장",password:"test-only-password",requestId:"request-test-123456789"};
@@ -36,7 +39,7 @@ function backend() {
   const get = (params={}) => {context.params={action:"load",...auth,...params};return JSON.parse(run("doGet({parameter:params}).text"))};
   const post = data => {context.body=JSON.stringify({...auth,...data});return JSON.parse(run("doPost({postData:{contents:body}}).text"))};
   const change = (overrides={}) => {context.changeInput={name:input.name,password:"01234567",expectedRevision:0,...overrides};return run("changeManagedProjectPassword(changeInput)")};
-  return {run,create,get,post,change,properties,creates:()=>creates,setActive:v=>active=v,failCreate:v=>failCreate=v,failSetup:v=>failSetup=v,onLock:fn=>onLock=fn};
+  return {run,create,get,post,change,properties,advance:ms=>now+=ms,creates:()=>creates,setActive:v=>active=v,failCreate:v=>failCreate=v,failSetup:v=>failSetup=v,onLock:fn=>onLock=fn};
 }
 
 test("new project provisions one sheet, idempotent retries never reset password",()=>{
@@ -48,13 +51,13 @@ test("anonymous callers cannot create projects or use owner RPC",()=>{
   const b=backend();b.setActive("");assert.throws(()=>b.create(),/관리자/);assert.throws(()=>b.run("listManagedProjects()"),/관리자/);assert.equal(b.creates(),0);
   b.setActive("someone@example.test");assert.throws(()=>b.run("setupConnector()"),/소유자/);
 });
-test("legacy names and passwords outside 8-128 characters are rejected without writes",()=>{
+test("legacy names and passwords outside 4-128 characters are rejected without writes",()=>{
   const b=backend();assert.throws(()=>b.create({name:"천안1"}),/기존/);
-  for(const password of ["123","1234","1234567"," ".repeat(8),"x".repeat(129),12345678,null]) assert.throws(()=>b.create({password}),/8~128/);
+  for(const password of ["123",""," ".repeat(4),"x".repeat(129),1234,null]) assert.throws(()=>b.create({password}),/4~128/);
   assert.equal(b.creates(),0);
 });
-test("eight digits preserve leading zero; longer passwords remain supported",()=>{
-  const b=backend();b.create({password:"01234567"});assert.equal(b.get({accessKey:accessKey("01234567")}).ok,true);assert.equal(b.get({accessKey:accessKey("1234567")}).ok,false);
+test("four digits preserve leading zero; longer passwords remain supported",()=>{
+  const b=backend();b.create({password:"0123"});assert.equal(b.get({accessKey:accessKey("0123")}).ok,true);assert.equal(b.get({accessKey:accessKey("123")}).ok,false);
   const long=backend();long.create({password:"x".repeat(128)});assert.equal(long.get({accessKey:accessKey("x".repeat(128))}).ok,true);
 });
 test("password changes are owner-only and cannot use the public data endpoint",()=>{
@@ -77,7 +80,7 @@ test("password rotation preserves sheet, records, state, journal and other proje
 });
 test("invalid password changes and incomplete projects never modify credentials",()=>{
   const b=backend();b.create();const before=[...b.properties];
-  for(const password of ["1234","1234567","x".repeat(129),"        ",12345678])assert.throws(()=>b.change({password}),/8~128/);
+  for(const password of ["123","","x".repeat(129),"    ",1234])assert.throws(()=>b.change({password}),/4~128/);
   for(const expectedRevision of [undefined,"0",-1,0.5])assert.throws(()=>b.change({expectedRevision}),/새로고침/);
   assert.throws(()=>b.change({name:"missing"}),/완료/);assert.throws(()=>b.change({name:"천안1"}),/완료/);assert.deepEqual([...b.properties],before);
   const partial=backend();partial.failSetup(true);assert.throws(()=>partial.create());assert.throws(()=>partial.change(),/완료/);
@@ -95,15 +98,27 @@ test("queued writes recheck credentials after a concurrent password change",()=>
   assert.equal(b.post({type:"workEntries",records:[{id:"old-request",cost:1}]}).ok,false);
   assert.equal(b.get({accessKey:accessKey("01234567")}).workEntries.length,0);
 });
-test("manager scripts compile and all password inputs require eight characters",()=>{
+test("manager scripts compile and all password inputs require four characters",()=>{
   const html=backend().run("MANAGER_HTML");const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];new vm.Script(script);
-  assert.equal((html.match(/minlength="8"/g)||[]).length,4);assert.ok(!html.includes('minlength="4"'));
+  assert.equal((html.match(/minlength="4"/g)||[]).length,4);assert.ok(!html.includes('minlength="8"'));
 });
 test("previously configured four-digit credentials remain valid until owner changes them",()=>{
   const b=backend();b.create();const key=[...b.properties.keys()].find(k=>k.startsWith("PROJECT_")),project=JSON.parse(b.properties.get(key));
   project.verifier=accessKey(project.salt+accessKey("0123"));b.properties.set(key,JSON.stringify(project));
-  assert.equal(b.get({accessKey:accessKey("0123")}).ok,true);assert.throws(()=>b.change({password:"4567"}),/8~128/);
-  assert.equal(b.get({accessKey:accessKey("0123")}).ok,true);b.change();assert.equal(b.get({accessKey:accessKey("0123")}).ok,false);
+  assert.equal(b.get({accessKey:accessKey("0123")}).ok,true);b.change({password:"4567"});
+  assert.equal(b.get({accessKey:accessKey("4567")}).ok,true);assert.equal(b.get({accessKey:accessKey("0123")}).ok,false);
+});
+
+test("repeated bad passwords briefly block only that project and expire",()=>{
+  const b=backend();b.create();b.create({name:"other"});
+  for(let i=0;i<10;i++)assert.equal(b.get({accessKey:accessKey("bad"+i)}).ok,false);
+  assert.match(b.get().message,/1분/);assert.equal(b.get({project:"other"}).ok,true);
+  b.advance(61000);assert.equal(b.get().ok,true);
+});
+
+test("project manager deep link is escaped and selects only the named project",()=>{
+  const b=backend();const html=b.run('doGet({parameter:{action:"manage",project:"</script><img src=x>"}}).text');
+  assert.ok(!html.includes('</script><img'));assert.ok(html.includes('\\u003c/script>'));
 });
 test("uncertain create never retries a second spreadsheet",()=>{
   const b=backend();b.failCreate(true);assert.throws(()=>b.create(),/network/);b.failCreate(false);assert.throws(()=>b.create(),/중복/);assert.equal(b.creates(),1);

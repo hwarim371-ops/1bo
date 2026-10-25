@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css?v=20261025-field-ui">
-  <link rel="stylesheet" href="field-ui.css?v=20261025-field-ui">
+  <link rel="stylesheet" href="field-ui.css?v=20261025-project-settings">
 </head>
 <body>
   <section class="access-gate" id="accessGate" aria-labelledby="accessTitle">
@@ -581,7 +581,7 @@
               <input id="newProjectEndpoint" type="url" placeholder="Apps Script 웹앱 URL">
               <button class="secondary-btn" type="submit">프로젝트 추가</button>
             </form>
-            <p class="settings-help">프로젝트 비밀번호는 각 구글시트의 Apps Script에서 <strong>setupProjectPassword</strong>를 실행해 설정합니다.</p>
+            <p class="settings-help">기존 현장도 아래 현장별 <strong>비밀번호 설정·변경</strong> 버튼에서 관리합니다. 비밀번호 관리 화면이 없는 별도 서버는 관리자 기능 업데이트가 필요합니다.</p>
             </details>
             <div id="projectSettings" class="settings-list project-settings-list"></div>
           </section>
@@ -612,14 +612,13 @@
             <div class="section-heading">
               <div>
                 <p class="eyebrow">기준 목록</p>
-                <h3>장비 · 인력 · 결제여부</h3>
+                <h3>장비 · 결제여부</h3>
               </div>
               <span class="pill muted">현장 기준값</span>
             </div>
             <form class="quick-add" id="quickAddForm">
               <select id="quickAddType" aria-label="추가 유형">
                 <option value="equipment">장비</option>
-                <option value="labor">인력</option>
                 <option value="payment">결제여부</option>
               </select>
               <input id="quickAddName" type="text" placeholder="새 항목명">
@@ -631,14 +630,16 @@
                 <div id="equipmentSettings" class="tag-list editable-tags"></div>
               </div>
               <div>
-                <h4>인력</h4>
-                <div id="laborSettings" class="tag-list editable-tags"></div>
-              </div>
-              <div>
                 <h4>결제여부</h4>
                 <div id="paymentSettings" class="tag-list editable-tags"></div>
               </div>
             </div>
+          </section>
+
+          <section class="work-panel">
+            <div class="section-heading"><div><p class="eyebrow">이 현장 전용</p><h3><span id="laborProjectName"></span> 인건비 설정</h3></div></div>
+            <p class="settings-help">인력 이름과 1공수(하루) 단가를 따로 설정합니다. 다른 프로젝트에는 적용되지 않으며, 단가 변경은 앞으로 입력할 업무에만 적용됩니다. 기존 업무 금액은 그대로 유지됩니다.</p>
+            <div id="laborSettings" class="labor-settings"></div>
           </section>
 
           <section class="work-panel">
@@ -676,7 +677,7 @@
   <script src="app-config.js"></script>
   <script src="project-directory.js?v=20261016-connection-check"></script>
   <script src="sheet-data.js"></script>
-  <script src="field-ui.js?v=20261025-field-ui"></script>
-  <script src="app.js?v=20261025-field-ui"></script>
+  <script src="field-ui.js?v=20261025-project-settings"></script>
+  <script src="app.js?v=20261025-project-settings"></script>
 </body>
 </html>

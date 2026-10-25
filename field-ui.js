@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const SIZE_KEY = "hwarim-reading-size";
+  const LIST_SIZES = [["default", "전체 글자 설정 따름"], ["14", "아주 작게 · 14"], ["16", "작게 · 16"], ["18", "보통 · 18"], ["20", "크게 · 20"], ["22", "더 크게 · 22"], ["24", "아주 크게 · 24"], ["28", "최대로 · 28"]];
   const PAGE_SIZE = 30;
   const pages = {};
   const expanded = new Set();
@@ -85,6 +86,49 @@
     return details;
   }
 
+  function setListTextSize(kind, size, persist = true) {
+    if (!["work", "material"].includes(kind)) return;
+    const safe = LIST_SIZES.some(([value]) => value === size) ? size : "default";
+    const view = document.getElementById(kind === "work" ? "view-logs" : "view-materials");
+    if (!view) return;
+    if (safe === "default") {
+      view.removeAttribute("data-list-text-size");
+      view.style.removeProperty("--list-text-size");
+    } else {
+      view.dataset.listTextSize = safe;
+      view.style.setProperty("--list-text-size", safe + "px");
+    }
+    const select = document.getElementById(kind + "TextSize");
+    if (select) select.value = safe;
+    if (persist) {
+      try { localStorage.setItem(SIZE_KEY + "-" + kind, safe); }
+      catch { saveResult("글자 크기는 바뀌었지만 이 기기에 설정을 기억하지 못했습니다.", true); }
+    }
+  }
+
+  function setupListTextSize(kind, heading, editButton) {
+    const tools = document.createElement("div");
+    tools.className = "list-display-tools";
+    const label = document.createElement("label");
+    const caption = document.createElement("span");
+    caption.textContent = (kind === "work" ? "업무" : "자재") + " 보기 글자 크기";
+    const select = document.createElement("select");
+    select.id = kind + "TextSize";
+    LIST_SIZES.forEach(([value, text]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.append(option);
+    });
+    label.append(caption, select);
+    tools.append(label, editButton);
+    heading.append(tools);
+    let saved;
+    try { saved = localStorage.getItem(SIZE_KEY + "-" + kind); } catch {}
+    setListTextSize(kind, saved, false);
+    select.addEventListener("change", () => setListTextSize(kind, select.value));
+  }
+
   function setupList(kind, viewId, prefix) {
     const view = document.querySelector(viewId);
     const table = view.querySelector("table");
@@ -93,7 +137,7 @@
     filters.className = "field-filter-grid";
     const inline = view.querySelector(".inline-filters");
     const editButton = inline.querySelector("[id^='toggle']");
-    inline.after(editButton);
+    setupListTextSize(kind, view.querySelector(".section-heading"), editButton);
     const filterRow = table.querySelector(".table-filter-row");
     const inputs = [...inline.querySelectorAll("input, select"), ...filterRow.querySelectorAll("input, select")];
     inputs.forEach((input) => {
@@ -218,7 +262,7 @@
     }
   }
 
-  window.FieldUI = { moneyNote, updateMoneyHint, inputError, saveResult, pageRows, revealRecord, enhanceTable, refresh };
+  window.FieldUI = { moneyNote, updateMoneyHint, inputError, saveResult, setListTextSize, pageRows, revealRecord, enhanceTable, refresh };
   document.addEventListener("DOMContentLoaded", () => {
     try { setReadingSize(localStorage.getItem(SIZE_KEY), false); } catch { setReadingSize("normal", false); }
     document.querySelector("#readingSize").addEventListener("change", (event) => setReadingSize(event.target.value));

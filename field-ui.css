@@ -1,4 +1,12 @@
 /* Readable field controls, without changing stored records or desktop table semantics. */
+.labor-settings { display: grid; gap: 16px; }
+.labor-setting-row { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; padding: 18px; background: #f7f1e6; border: 1px solid #b8a78f; border-radius: 12px; }
+.labor-setting-row label { min-width: 0; }
+.labor-setting-row label > span { display: block; margin-bottom: 6px; }
+.labor-setting-row .row-actions, .labor-rename-option { grid-column: 1 / -1; }
+body .labor-rename-option { display: flex; align-items: center; gap: 10px; font-size: .9rem; }
+body .labor-rename-option input { width: 24px; min-height: 24px; height: 24px; flex-shrink: 0; }
+@media (max-width: 700px) { .labor-setting-row { grid-template-columns: 1fr; padding: 12px; } }
 html { font-size: 18px; }
 html[data-reading-size="large"] { font-size: 20px; }
 html[data-reading-size="larger"] { font-size: 22px; }
@@ -70,6 +78,11 @@ body .sidebar-project select, body .detail-note-heading strong { font-size: 1rem
 .field-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; }
 .field-pager > span { flex: 1 1 250px; font-size: .9rem; }
 .field-pager > select { width: auto; max-width: 100%; }
+.list-display-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; max-width: 100%; }
+.list-display-tools label { display: grid; gap: 4px; min-width: 0; }
+.list-display-tools label > span { font-size: .88rem; }
+.list-display-tools select { width: 100%; }
+.list-display-tools .secondary-btn.active { color: #fff; background: #52371f; }
 .card-toggle { display: none; }
 body .compact-view th, body .compact-view td { font-size: .9rem; line-height: 1.5; padding: 12px; }
 body .compact-view th { font-weight: 800; color: #493622; }
@@ -169,4 +182,20 @@ body .summary-money-card small, body .summary-money-card span, body .dashboard-t
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+/* Apply size without rebuilding rows or disturbing unsaved cell edits. */
+body .compact-view[data-list-text-size] .field-record-table :is(th, td, input, select, textarea, button, .status-badge, .sync-record-status, .detail-process-static, .money-hint) {
+  font-size: var(--list-text-size); line-height: 1.5;
+}
+body .compact-view[data-list-text-size] .field-record-table td[data-label]::before,
+body .compact-view[data-list-text-size] .detail-process-preview::after {
+  font-size: max(14px, calc(var(--list-text-size) * .85));
+}
+body .compact-view[data-list-text-size] .table-summary-card :is(strong, span) { font-size: var(--list-text-size); }
+@media (max-width: 700px) {
+  .compact-view > .work-panel > .section-heading { flex-wrap: wrap; }
+  .list-display-tools { width: 100%; }
+  .list-display-tools label { flex: 1 1 190px; }
+  .compact-view .inline-edit-bar { flex-wrap: wrap; }
+  .compact-view .inline-edit-bar > strong, .compact-view .inline-edit-bar > span { width: 100%; }
 }

@@ -53,6 +53,7 @@ const seedState = {
   workForms: {},
   pendingShared: {},
   config: normalizeConfig(sourceData.config),
+  projectConfigs: {},
   entries: normalizeEntries(sourceData.workEntries),
   materialOrders: normalizeMaterialOrders(sourceData.materialOrders),
   dashboard: sourceData.dashboard || {}
@@ -293,7 +294,7 @@ function bindEvents() {
   elements.connectionCheckButton.addEventListener("click", checkProjectConnection);
   elements.accessProjectSelect.addEventListener("change", () => {
     resetConnectionCheck();
-    state.activeProject = elements.accessProjectSelect.value;
+    activateProject(elements.accessProjectSelect.value);
     saveState();
     elements.accessPassword.value = "";
     setAccessError("");
@@ -310,7 +311,7 @@ function bindEvents() {
       window.alert("저장 또는 동기화가 끝난 뒤 프로젝트를 바꿔주세요.");
       return;
     }
-    state.activeProject = elements.projectSelect.value;
+    activateProject(elements.projectSelect.value);
     state.editingEntryId = "";
     state.editingMaterialId = "";
     saveState();
@@ -522,7 +523,7 @@ async function showProjectAccessGate(projectName) {
   if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) return;
   resetConnectionCheck();
   projectAccessKeys.clear();
-  state.activeProject = projectName || state.projects[0]?.name || "제천2덕동골";
+  activateProject(projectName || state.projects[0]?.name || "제천2덕동골");
   saveState();
   fillSelect(elements.accessProjectSelect, state.projects.map((project) => project.name));
   elements.accessProjectSelect.value = state.activeProject;
@@ -544,7 +545,7 @@ async function handleProjectAccess(event) {
 
   resetConnectionCheck();
   elements.connectionCheckButton.disabled = true;
-  state.activeProject = projectName;
+  activateProject(projectName);
   saveState();
   renderAll();
   elements.accessSubmitButton.disabled = true;
@@ -725,7 +726,7 @@ function renderProjectOptions() {
   elements.projectSelect.value = state.projects.some((project) => project.name === current)
     ? current
     : state.projects[0]?.name || "제천2덕동골";
-  state.activeProject = elements.projectSelect.value;
+  activateProject(elements.projectSelect.value);
   if (elements.brandProjectTitle) elements.brandProjectTitle.textContent = state.activeProject || "현장 프로젝트";
 }
 
@@ -931,7 +932,7 @@ function updateResourceRowCost(row) {
   const entry = state.activeKind === "labor"
     ? { labor: item, workAmount }
     : { equipment: item, workAmount };
-  costInput.value = estimateCost(entry) || "";
+  costInput.value = estimateCost(entry);
   costInput.dataset.auto = "true";
   window.FieldUI?.updateMoneyHint(costInput);
 }
@@ -3119,8 +3120,80 @@ function renderSettings() {
   renderProjectSettings();
   renderProcessSettings();
   renderEditableTags(elements.equipmentSettings, "equipment", state.config.equipment);
-  renderEditableTags(elements.laborSettings, "labor", state.config.labor);
+  renderLaborSettings();
   renderEditableTags(elements.paymentSettings, "payment", state.config.payments);
+}
+
+function projectPasswordUrl(project) {
+  const endpoint = project.managed ? appConfig.projectDirectoryEndpoint : project.syncEndpoint;
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(endpoint || "")) return "";
+  return endpoint + "?action=manage&project=" + encodeURIComponent(project.name);
+}
+
+function activateProject(name) {
+  if (state.activeProject === name) return;
+  state.projectConfigs ||= {};
+  Object.defineProperty(state.projectConfigs, state.activeProject, { value: clone(state.config), writable: true, enumerable: true, configurable: true });
+  const cached = Object.hasOwn(state.projectConfigs, name) ? state.projectConfigs[name] : sourceData.config;
+  state.activeProject = name;
+  state.config = normalizeConfig(state.pendingShared[name]?.config || cached);
+}
+
+function legacyLaborRate(name) {
+  const match = String(name).match(/(\d+)/);
+  return match ? Number(match[1]) * 10000 : "";
+}
+
+function renderLaborSettings() {
+  const container = elements.laborSettings;
+  container.innerHTML = "";
+  document.querySelector("#laborProjectName").textContent = getActiveProjectName();
+  const makeForm = (oldName) => {
+    const form = document.createElement("form");
+    form.className = "labor-setting-row";
+    form.innerHTML = `<label><span>인력 이름</span><input name="laborName" type="text" maxlength="80" required value="${escapeAttr(oldName || "")}" placeholder="예: 최소장"></label>
+      <label><span>1공수 단가 (원)</span><input name="laborRate" type="number" min="0" step="1" inputmode="numeric" data-money required value="${oldName ? escapeAttr(state.config.laborRates[oldName] ?? legacyLaborRate(oldName)) : ""}" placeholder="예: 300000"></label>
+      ${oldName ? '<label class="labor-rename-option"><input name="renameRecords" type="checkbox">기존 기록 이름도 변경 (금액 유지)</label>' : ""}
+      <div class="row-actions"><button class="primary-btn" type="submit">${oldName ? "이 항목 저장" : "인력 추가"}</button>${oldName ? '<button class="secondary-btn" type="button" data-remove-labor>목록에서 삭제</button>' : ""}</div>`;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const name = form.elements.laborName.value.trim();
+      const raw = form.elements.laborRate.value;
+      try {
+        const changed = updateLaborSetting(oldName, name, raw === "" ? NaN : Number(raw), Boolean(form.elements.renameRecords?.checked));
+        state.pendingShared[getActiveProjectName()] = buildSharedStatePayload();
+        saveState();
+        renderAll();
+        const ok = getSyncEndpoint() && (changed.length
+          ? await syncWorkRowsWithOverlay(changed, "이 현장의 인력 이름과 단가를 저장하는 중입니다")
+          : await runWithSyncOverlay("이 현장의 인건비 설정을 저장하는 중입니다", syncSharedBackup));
+        window.FieldUI?.saveResult(ok ? `${getActiveProjectName()} 인건비 설정을 저장했습니다. 다른 현장과 기존 금액은 변경하지 않았습니다.` : "설정은 이 기기에 보관했습니다. 시트 저장을 확인하지 못했으니 미전송 다시 저장을 눌러주세요.", !ok);
+      } catch (error) { showInputError(form.elements.laborRate, error.message); }
+    });
+    form.querySelector("[data-remove-labor]")?.addEventListener("click", () => removeSettingItem("labor", oldName));
+    container.append(form);
+  };
+  state.config.labor.forEach(makeForm);
+  makeForm("");
+}
+
+function updateLaborSetting(oldName, name, rate, renameRecords) {
+  if (!name || name.length > 80) throw new Error("인력 이름을 1~80자로 입력해주세요.");
+  if (!Number.isSafeInteger(rate) || rate < 0) throw new Error("1공수 단가를 원 단위의 0 이상 정수로 입력해주세요.");
+  if (name !== oldName && state.config.labor.includes(name)) throw new Error("이 현장에 같은 이름이 있습니다. 기존 항목을 수정해주세요.");
+  if (oldName && !state.config.labor.includes(oldName)) throw new Error("항목이 변경되었습니다. 목록을 다시 확인해주세요.");
+  if (renameRecords && Object.keys(sheetEdits("work")).length) throw new Error("업무현황의 수정 중인 내용을 먼저 저장하거나 취소해주세요.");
+  const project = getActiveProjectName();
+  const changed = renameRecords && oldName && oldName !== name
+    ? state.entries.filter((row) => row.project === project && row.labor === oldName).map((row) => ({ ...row, labor: name, status: "local", updatedAt: new Date().toISOString() })) : [];
+  const byId = new Map(changed.map((row) => [row.id, row]));
+  state.entries = state.entries.map((row) => row.project === project ? byId.get(row.id) || row : row);
+  state.config.labor = oldName ? state.config.labor.map((item) => item === oldName ? name : item) : [...state.config.labor, name];
+  const rates = { ...state.config.laborRates };
+  if (oldName) delete rates[oldName];
+  Object.defineProperty(rates, name, { value: rate, writable: true, enumerable: true, configurable: true });
+  state.config.laborRates = rates;
+  return changed;
 }
 
 function renderProjectSettings() {
@@ -3134,6 +3207,7 @@ function renderProjectSettings() {
         ${project.managed ? '<span class="pill muted">자동 연결</span>' : `<button class="icon-btn delete" type="button" title="프로젝트 삭제" data-remove-project="${escapeAttr(project.name)}" ${state.projects.length <= 1 ? "disabled" : ""}>X</button>`}
       </header>
       <p>${project.syncEndpoint ? "구글시트 연결됨" : "URL 미등록"}</p>
+      ${projectPasswordUrl(project) ? `<a class="secondary-btn" href="${escapeAttr(projectPasswordUrl(project))}" target="_blank" rel="noopener noreferrer">${escapeHtml(project.name)} 비밀번호 설정·변경</a><p class="settings-help">구글 관리자 전용 · 새 비밀번호 4자 이상 · 다른 현장 비밀번호는 그대로 유지</p>` : ""}
     `;
     elements.projectSettings.append(card);
   });
@@ -3217,7 +3291,8 @@ function removeProject(name) {
   state.entries = state.entries.filter((entry) => (entry.project || "제천2덕동골") !== name);
   state.materialOrders = state.materialOrders.filter((order) => (order.project || "제천2덕동골") !== name);
   state.extraSummaryItems = state.extraSummaryItems.filter((item) => (item.project || "제천2덕동골") !== name);
-  if (state.activeProject === name) state.activeProject = state.projects[0]?.name || "제천2덕동골";
+  if (state.activeProject === name) activateProject(state.projects[0]?.name || "제천2덕동골");
+  delete state.projectConfigs[name];
   saveState();
   renderAll();
   queueSharedBackup();
@@ -3463,6 +3538,7 @@ function quickAddSetting() {
   const type = elements.quickAddType.value;
   const name = elements.quickAddName.value.trim();
   if (!name) return;
+  if (type === "labor") return;
 
   const key = type === "payment" ? "payments" : type;
   if (!state.config[key].includes(name)) {
@@ -3477,7 +3553,9 @@ function quickAddSetting() {
 
 function removeSettingItem(type, value) {
   const key = type === "payment" ? "payments" : type;
+  if (type === "labor" && !window.confirm(`${getActiveProjectName()}의 인건비 목록에서 ${value}을(를) 삭제할까요? 기존 업무 기록과 금액은 그대로 남습니다.`)) return;
   state.config[key] = state.config[key].filter((item) => item !== value);
+  if (type === "labor") delete state.config.laborRates[value];
   saveState();
   renderAll();
   queueSharedBackup();
@@ -3725,7 +3803,7 @@ function buildSharedStatePayload() {
     projectSettings: { constructionStartDate: getActiveProject().constructionStartDate || "" },
     savedAt: new Date().toISOString(),
     projects: state.projects,
-    config: state.config,
+    config: clone(state.config),
     extraSummaryItems: projectExtraSummaryItems(),
     deletedRecords: state.deletedRecords || { work: [], material: [] },
     summaryRange: {
@@ -3799,10 +3877,10 @@ async function restoreFromGoogleSheet(options = {}) {
 
     const pendingShared = state.pendingShared[projectName];
     if (pendingShared) {
-      state.config = normalizeConfig(pendingShared.config || sourceData.config);
+      state.config = normalizeConfig(pendingShared.config || state.projectConfigs[projectName] || sourceData.config);
       if (pendingShared.projectSettings) getActiveProject().constructionStartDate = pendingShared.projectSettings.constructionStartDate || "";
     } else if (!stateData.config) {
-      state.config = normalizeConfig(sourceData.config);
+      state.config = normalizeConfig(state.projectConfigs[projectName] || sourceData.config);
     }
     if (stateData.projectSettings && !pendingShared) getActiveProject().constructionStartDate = stateData.projectSettings.constructionStartDate || "";
     if (stateData.config && !pendingShared) {
@@ -3879,10 +3957,10 @@ function loadSheetBackupJsonp(accessKey = getAccessKey()) {
 }
 
 function estimateCost(entry) {
-  const amount = amountOf(entry.workAmount) || 1;
+  const amount = entry.workAmount === "" || entry.workAmount == null ? 1 : amountOf(entry.workAmount);
   if (entry.labor) {
-    const match = String(entry.labor).match(/(\d+)/);
-    return match ? Number(match[1]) * 10000 * amount : "";
+    const rate = Object.hasOwn(state.config.laborRates || {}, entry.labor) ? state.config.laborRates[entry.labor] : legacyLaborRate(entry.labor);
+    return rate === "" ? "" : rate * amount;
   }
   if (String(entry.equipment).trim() === "공투") {
     return 700000 * amount;
@@ -4286,10 +4364,16 @@ function mergeProjects(savedProjects = [], configuredProjects = []) {
 }
 
 function normalizeConfig(config = {}) {
+  config = config && typeof config === "object" ? clone(config) : {};
+  const labor = Array.isArray(config.labor) ? [...new Set(config.labor.filter((name) => typeof name === "string" && name.trim()))] : [];
   return {
     processes: config.processes?.length ? config.processes : [],
     equipment: config.equipment?.length ? config.equipment : [],
-    labor: config.labor?.length ? config.labor : [],
+    labor,
+    laborRates: Object.fromEntries(labor.map((name) => {
+      const value = Object.hasOwn(config.laborRates || {}, name) ? config.laborRates[name] : legacyLaborRate(name);
+      return [name, Number.isSafeInteger(value) && value >= 0 ? value : ""];
+    })),
     payments: config.payments?.length ? config.payments.filter((item) => item !== "도급") : [],
     workAmounts: [1, 0.5],
     costTypes: config.costTypes?.length ? config.costTypes : ["장비대", "인건비"]
@@ -4389,6 +4473,9 @@ function loadState() {
     if (!loaded.projects.some((project) => project.name === loaded.activeProject)) {
       loaded.activeProject = loaded.projects[0]?.name || "제천2덕동골";
     }
+    loaded.projectConfigs = Object.fromEntries(Object.entries(parsed.projectConfigs || {}).map(([name, config]) => [name, normalizeConfig(config)]));
+    if (!Object.hasOwn(loaded.projectConfigs, loaded.activeProject)) loaded.projectConfigs[loaded.activeProject] = clone(loaded.config);
+    loaded.config = normalizeConfig(loaded.pendingShared[loaded.activeProject]?.config || loaded.projectConfigs[loaded.activeProject]);
     return loaded;
   } catch {
     storageLoadFailed = true;
@@ -4400,6 +4487,8 @@ function loadState() {
 function saveState() {
   if (storageLoadFailed) throw new Error("기존 기기 저장자료를 읽을 수 없어 덮어쓰기를 중지했습니다. 브라우저 데이터를 지우지 말고 백업부터 확인해주세요.");
   try {
+    state.projectConfigs ||= {};
+    Object.defineProperty(state.projectConfigs, getActiveProjectName(), { value: clone(state.config), writable: true, enumerable: true, configurable: true });
     const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     // Remember the last acknowledged version before editing, so a retry can detect a competing edit.
     for (const [field, key] of [["entries", workSyncKey], ["materialOrders", materialContentKey]]) {
