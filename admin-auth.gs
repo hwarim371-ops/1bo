@@ -60,6 +60,20 @@ function logoutAdministrator(token) {
   if (typeof token === "string" && token.length <= 100) CacheService.getScriptCache().remove("admin-session-" + hash_(token));
 }
 
+function administratorBrowserResponse_(params) {
+  const origin = "https://hwarim371-ops.github.io";
+  if (params.origin !== origin || !/^[a-zA-Z0-9-]{32,100}$/.test(String(params.requestId || ""))) throw new Error("관리자 요청 경로가 올바르지 않습니다.");
+  let result;
+  try {
+    if (params.adminBrowserAction === "login") result = { ok: true, ...loginAdministrator(params.password) };
+    else if (params.adminBrowserAction === "logout") { logoutAdministrator(params.adminToken); result = { ok: true }; }
+    else throw new Error("지원하지 않는 관리자 요청입니다.");
+  } catch (error) { result = { ok: false, message: error.message }; }
+  const message = JSON.stringify({ type: "hwarim-administrator", requestId: params.requestId, ...result }).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  // Only this callback is embeddable. The credential setup/management pages are not.
+  return HtmlService.createHtmlOutput('<!doctype html><meta charset="utf-8"><script>window.top.postMessage(' + message + ',' + JSON.stringify(origin) + ');</script>').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 function administratorSetupPage_() {
   requireOwner_();
   return HtmlService.createHtmlOutput(ADMIN_SETUP_HTML).setTitle("관리자 비밀번호 최초 등록").addMetaTag("viewport", "width=device-width, initial-scale=1");

@@ -1,5 +1,5 @@
 // Deploy as a NEW standalone Apps Script. Do not replace legacy project scripts.
-const CONNECTOR_VERSION = "project-connector-2026-10-25-admin-pin";
+const CONNECTOR_VERSION = "project-connector-2026-10-25-admin-bridge";
 const COMPATIBLE_VERSION = "secure-sync-2026-06-12";
 const RESERVED_PROJECTS = ["제천2조은삼", "천안1", "화순"];
 const WORK_FIELDS = ["id", "date", "mainProcess", "subProcess", "detailProcess", "equipment", "labor", "workAmount", "costType", "cost", "paymentStatus", "memo", "project", "contractFlag", "contractTotal", "contractGroupId", "contractOriginalCost", "contractOriginalCostType", "createdAt", "updatedAt"];
@@ -137,7 +137,7 @@ function doGet(e) {
     if (params.action !== "load") throw new Error("지원하지 않는 요청입니다.");
     const project = authorize_(params);
     const ss = SpreadsheetApp.openById(project.spreadsheetId);
-    return json_({ ok: true, scriptVersion: COMPATIBLE_VERSION, project: project.name,
+    return json_({ ok: true, scriptVersion: COMPATIBLE_VERSION, settingsProtection: true, project: project.name,
       workEntries: readRecords_(ss.getSheetByName("업무현황"), WORK_FIELDS, project.name),
       materialOrders: readRecords_(ss.getSheetByName("자재현황"), MATERIAL_FIELDS, project.name),
       stateData: readState_(ss, project.name), summarySnapshot: [] }, params.callback);
@@ -164,6 +164,7 @@ function authorize_(input) {
 }
 
 function doPost(e) {
+  if (e?.parameter?.adminBrowserAction) return administratorBrowserResponse_(e.parameter);
   let lock;
   try {
     const text = e?.postData?.contents || "{}";
@@ -172,6 +173,10 @@ function doPost(e) {
     if (input.action === "administratorLogin") return json_({ ok: true, ...loginAdministrator(input.password) });
     if (input.action === "verifyAdministrator") {
       requireAdministrator_(input.adminToken);
+      return json_({ ok: true });
+    }
+    if (input.action === "logoutAdministrator") {
+      logoutAdministrator(input.adminToken);
       return json_({ ok: true });
     }
     authorize_(input);
@@ -185,7 +190,7 @@ function doPost(e) {
     const ss = SpreadsheetApp.openById(project.spreadsheetId);
     const records = Array.isArray(input.records) ? input.records : [];
     if (records.length > 5000) throw new Error("한 번에 5000건 이하로 저장해주세요.");
-    if (input.type === "appState") saveState_(ss, project.name, input.stateData || {});
+    if (input.type === "appState") saveState_(ss, project.name, mergeProtectedSettings_(readState_(ss, project.name), input.stateData || {}, input, requireAdministrator_));
     else if (input.type === "summarySnapshot") {
       const sheet = ss.getSheetByName("최종현황");
       const rows = records.map((r) => [cell_(project.name), cell_(r.group), cell_(r.name), cell_(r.value), cell_(r.type), new Date().toISOString()]);

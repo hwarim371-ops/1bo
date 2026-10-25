@@ -166,8 +166,8 @@ test("sync never posts a conflicting edit", async () => {
 test("settings writes are acknowledged by readback, not opaque HTTP response", async () => {
   const { run, context } = app();
   context.fetch = async () => ({ type: "opaque" });
-  run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); wait=async()=>{}; loadSheetBackupJsonp=async()=>({ok:true,scriptVersion:REQUIRED_SCRIPT_VERSION,stateData:{config:{old:true}}});');
-  assert.equal(await run('syncPayload("appState",[],{stateData:{config:{changed:true}}})'), false);
+  run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); wait=async()=>{}; loadSheetBackupJsonp=async()=>({ok:true,scriptVersion:REQUIRED_SCRIPT_VERSION,settingsProtection:true,stateData:{config:{old:true},settingsRevision:0}});');
+  assert.equal(await run('syncPayload("appState",[],{stateData:{config:{changed:true},projectSettings:{},projects:[]},settingsUpdate:true,expectedSettingsRevision:0,adminToken:"fake"})'), false);
 });
 test("empty persisted arrays remain empty rather than restoring seed records", () => {
   const { run } = app();
@@ -185,11 +185,22 @@ test("restore rejects malformed payload without deleting local records", async (
 
 test("real restore preserves unsent records, cell drafts and pending project settings", async () => {
   const { run } = app();
-  run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); elements.restoreSyncButton={}; renderAll=()=>{}; state.entries=[{id:"a",project:"P",cost:30,status:"failed"}]; sheetEdits("work").a={memo:{before:"old",value:"draft"}}; state.pendingShared.P={config:{labor:["my list"]}}; state.config.labor=["my list"]; loadSheetBackupJsonp=async()=>({ok:true,scriptVersion:REQUIRED_SCRIPT_VERSION,workEntries:[],materialOrders:[],stateData:{config:{labor:["remote list"]}}});');
+  run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); elements.restoreSyncButton={}; renderAll=()=>{}; state.entries=[{id:"a",project:"P",cost:30,status:"failed"}]; sheetEdits("work").a={memo:{before:"old",value:"draft"}}; state.pendingSettings.P={stateData:{config:{labor:["my list"]}},expectedRevision:0}; state.config.labor=["my list"]; loadSheetBackupJsonp=async()=>({ok:true,scriptVersion:REQUIRED_SCRIPT_VERSION,workEntries:[],materialOrders:[],stateData:{config:{labor:["remote list"]}}});');
   assert.equal(await run('restoreFromGoogleSheet({silent:true})'),true);
   assert.equal(run('state.entries[0].id'),"a");
   assert.equal(run('sheetEdits("work").a.memo.value'),"draft");
   assert.equal(run('state.config.labor[0]'),"my list");
+});
+
+test("old mixed settings pending is retained for admin review but cannot replace live references",async()=>{
+  const {run}=app();run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); elements.restoreSyncButton={}; renderAll=()=>{}; state.pendingShared.P={config:{labor:["old unsent"]}}; loadSheetBackupJsonp=async()=>({ok:true,scriptVersion:REQUIRED_SCRIPT_VERSION,workEntries:[],materialOrders:[],stateData:{config:{labor:["current"]},settingsRevision:5}});');
+  await run('restoreFromGoogleSheet({silent:true})');assert.equal(run('state.config.labor[0]'),'current');assert.equal(run('state.pendingSettings.P.stateData.config.labor[0]'),'old unsent');assert.equal(run('state.pendingSettings.P.needsReview'),true);
+});
+
+test("administrator settings are never sent to a server without settings protection",async()=>{
+  const {run,context}=app();let posted=false;context.fetch=async()=>{posted=true};
+  run('state.projects[0].syncEndpoint="https://example.invalid"; projectAccessKeys.set("P","test"); loadSheetBackupJsonp=async()=>({scriptVersion:REQUIRED_SCRIPT_VERSION,stateData:{}})');
+  assert.equal(await run('syncPayload("appState",[],{settingsUpdate:true,stateData:{}})'),false);assert.equal(posted,false);
 });
 
 test("storage failure aborts save rather than reporting success", () => {

@@ -52,6 +52,8 @@ const seedState = {
   sheetEdits: {},
   workForms: {},
   pendingShared: {},
+  pendingSettings: {},
+  settingsRevisions: {},
   config: normalizeConfig(sourceData.config),
   projectConfigs: {},
   entries: normalizeEntries(sourceData.workEntries),
@@ -75,6 +77,7 @@ let workFormDirty = false;
 let syncInFlight = 0;
 let retryingPending = false;
 let sharedBackupTask = null;
+let settingsBackupTask = null;
 const projectAccessKeys = new Map();
 let connectionCheckSequence = 0;
 
@@ -255,6 +258,10 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  window.addEventListener("administratorchange", renderAdministratorSettings);
+  document.querySelector("#administratorUnlock").addEventListener("click", () => window.AdministratorAccess?.open());
+  document.querySelector("#administratorLock").addEventListener("click", () => window.AdministratorAccess?.lock());
+  document.querySelector("#retrySettingsButton").addEventListener("click", () => { if (ensureSettingsAdministrator()) syncSettingsBackup(); });
   document.querySelectorAll("[data-refresh-projects]").forEach((button) => button.addEventListener("click", refreshProjectDirectory));
   window.addEventListener("focus", () => refreshProjectDirectory());
   document.querySelectorAll("[data-project-manager]").forEach((link) => {
@@ -269,7 +276,7 @@ function bindEvents() {
   ["input", "change"].forEach((eventName) => elements.entryForm.addEventListener(eventName, rememberWorkForm));
   window.addEventListener("online", () => retryPendingRecords());
   window.addEventListener("beforeunload", (event) => {
-    if (workFormDirty || hasSheetEdits() || pendingRecords().length || state.pendingShared[getActiveProjectName()]) {
+    if (workFormDirty || hasSheetEdits() || pendingRecords().length || state.pendingShared[getActiveProjectName()] || state.pendingSettings?.[getActiveProjectName()]) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -283,12 +290,13 @@ function bindEvents() {
   document.querySelector("#retryPendingButton").addEventListener("click", () => retryPendingRecords());
   document.querySelector("#backupLocalButton").addEventListener("click", downloadLocalBackup);
   elements.constructionStartDate.addEventListener("change", () => {
+    if (!ensureSettingsAdministrator()) { elements.constructionStartDate.value = getProjectStartDate(); return; }
     const project = getActiveProject();
     project.constructionStartDate = elements.constructionStartDate.value;
     project.settingsUpdatedAt = new Date().toISOString();
     saveState();
     renderSummary();
-    queueSharedBackup();
+    queueSettingsBackup();
   });
   elements.accessForm.addEventListener("submit", handleProjectAccess);
   elements.connectionCheckButton.addEventListener("click", checkProjectConnection);
@@ -306,7 +314,7 @@ function bindEvents() {
   });
 
   elements.projectSelect.addEventListener("change", async () => {
-    if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) {
+    if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask || settingsBackupTask) {
       elements.projectSelect.value = state.activeProject;
       window.alert("저장 또는 동기화가 끝난 뒤 프로젝트를 바꿔주세요.");
       return;
@@ -474,6 +482,7 @@ function bindEvents() {
   });
 
   elements.saveSyncButton.addEventListener("click", () => {
+    if (!ensureSettingsAdministrator()) return;
     if (getActiveProject().managed) return;
     const endpoint = elements.syncEndpoint.value.trim();
     const project = getActiveProject();
@@ -481,7 +490,7 @@ function bindEvents() {
     if (getActiveProjectName() === "제천2덕동골") state.syncEndpoint = endpoint;
     saveState();
     renderSyncState();
-    queueSharedBackup();
+    queueSettingsBackup();
   });
 
   elements.restoreSyncButton.addEventListener("click", restoreFromGoogleSheet);
@@ -520,6 +529,7 @@ function bindEvents() {
 }
 
 async function showProjectAccessGate(projectName) {
+  window.AdministratorAccess?.lock();
   if (savingWork || savingMaterial || syncInFlight || retryingPending || sharedBackupTask) return;
   resetConnectionCheck();
   projectAccessKeys.clear();
@@ -2102,9 +2112,7 @@ async function splitEquipmentCost(id) {
     status
   };
 
-  if (!state.config.labor.includes(laborName)) {
-    state.config.labor.push(laborName);
-  }
+  // A split may use a one-off labor name without changing administrator-owned lists.
 
   const changedEntries = [equipmentEntry, laborEntry];
   state.entries = state.entries.flatMap((entry) => entry.id === id ? changedEntries : [entry]);
@@ -3122,6 +3130,77 @@ function renderSettings() {
   renderEditableTags(elements.equipmentSettings, "equipment", state.config.equipment);
   renderLaborSettings();
   renderEditableTags(elements.paymentSettings, "payment", state.config.payments);
+  renderAdministratorSettings();
+}
+
+function ensureSettingsAdministrator() {
+  return Boolean(window.AdministratorAccess?.ensure());
+}
+
+function renderAdministratorSettings() {
+  const active = Boolean(window.AdministratorAccess?.token());
+  const fields = document.querySelector("#administratorSettingsFields");
+  if (!fields) return;
+  fields.disabled = !active;
+  elements.constructionStartDate.disabled = !active;
+  elements.syncEndpoint.disabled = !active || Boolean(getActiveProject().managed);
+  elements.saveSyncButton.disabled = !active || Boolean(getActiveProject().managed);
+  document.querySelector("#administratorUnlock").hidden = active;
+  document.querySelector("#administratorLock").hidden = !active;
+  const pending = state.pendingSettings?.[getActiveProjectName()];
+  const retry = document.querySelector("#retrySettingsButton");
+  retry.hidden = !pending || Boolean(pending.needsReview);
+  retry.disabled = !active || Boolean(settingsBackupTask);
+  document.querySelector("#administratorSettingsStatus").textContent = (active ? "관리자 확인 완료 · 15분 후 자동 잠금" : "관리 설정 잠김 · 업무와 자재는 계속 작성할 수 있습니다.")
+    + (pending ? (pending.needsReview ? " 이전 기기의 미전송 설정을 보관했습니다. 최신 목록을 확인하고 필요한 항목을 다시 저장해주세요." : " 이 현장의 관리 설정은 기기에 보관 중이며 시트 저장 확인이 필요합니다.") : "");
+}
+
+function buildSettingsPayload() {
+  return { config: clone(state.config), projectSettings: { constructionStartDate: getActiveProject().constructionStartDate || "" }, projects: clone(state.projects) };
+}
+
+function stageSettingsBackup() {
+  const project = getActiveProjectName(), previous = state.pendingSettings?.[project];
+  state.pendingSettings ||= {};
+  if (previous?.needsReview) {
+    state.legacySettingsDrafts ||= {};
+    state.legacySettingsDrafts[project] = clone(previous);
+  }
+  state.pendingSettings[project] = {
+    stateData: buildSettingsPayload(),
+    expectedRevision: previous && !previous.needsReview ? previous.expectedRevision : (state.settingsRevisions?.[project] || 0)
+  };
+  saveState();
+  renderAdministratorSettings();
+}
+
+function queueSettingsBackup() {
+  stageSettingsBackup();
+  if (!syncInFlight && !settingsBackupTask) syncSettingsBackup();
+}
+
+async function syncSettingsBackup() {
+  if (settingsBackupTask) return settingsBackupTask;
+  const project = getActiveProjectName(), endpoint = getSyncEndpoint();
+  if (!state.pendingSettings?.[project] || state.pendingSettings[project].needsReview) return true;
+  const adminToken = window.AdministratorAccess?.token();
+  const trusted = endpoint === appConfig.projectDirectoryEndpoint || defaultProjects.some(item => item.syncEndpoint === endpoint && endpoint);
+  if (!adminToken || !getAccessKey() || !trusted) return false;
+  settingsBackupTask = (async () => {
+    try {
+      while (state.pendingSettings[project]) {
+        const pending = state.pendingSettings[project];
+        if (pending.needsReview || !window.AdministratorAccess?.token()) return false;
+        const ok = await syncPayload("appState", [], { stateData: pending.stateData, settingsUpdate: true, expectedSettingsRevision: pending.expectedRevision, adminToken });
+        if (!ok) return false;
+        if (state.pendingSettings[project] === pending) delete state.pendingSettings[project];
+        else state.pendingSettings[project].expectedRevision = state.settingsRevisions[project];
+        saveState();
+      }
+      return true;
+    } finally { settingsBackupTask = null; renderAdministratorSettings(); }
+  })();
+  return settingsBackupTask;
 }
 
 function projectPasswordUrl(project) {
@@ -3136,7 +3215,8 @@ function activateProject(name) {
   Object.defineProperty(state.projectConfigs, state.activeProject, { value: clone(state.config), writable: true, enumerable: true, configurable: true });
   const cached = Object.hasOwn(state.projectConfigs, name) ? state.projectConfigs[name] : sourceData.config;
   state.activeProject = name;
-  state.config = normalizeConfig(state.pendingShared[name]?.config || cached);
+  const pending = state.pendingSettings?.[name];
+  state.config = normalizeConfig(pending && !pending.needsReview ? pending.stateData.config : cached);
 }
 
 function legacyLaborRate(name) {
@@ -3157,17 +3237,17 @@ function renderLaborSettings() {
       <div class="row-actions"><button class="primary-btn" type="submit">${oldName ? "이 항목 저장" : "인력 추가"}</button>${oldName ? '<button class="secondary-btn" type="button" data-remove-labor>목록에서 삭제</button>' : ""}</div>`;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (!ensureSettingsAdministrator()) return;
       const name = form.elements.laborName.value.trim();
       const raw = form.elements.laborRate.value;
       try {
         const changed = updateLaborSetting(oldName, name, raw === "" ? NaN : Number(raw), Boolean(form.elements.renameRecords?.checked));
-        state.pendingShared[getActiveProjectName()] = buildSharedStatePayload();
+        stageSettingsBackup();
         saveState();
         renderAll();
-        const ok = getSyncEndpoint() && (changed.length
-          ? await syncWorkRowsWithOverlay(changed, "이 현장의 인력 이름과 단가를 저장하는 중입니다")
-          : await runWithSyncOverlay("이 현장의 인건비 설정을 저장하는 중입니다", syncSharedBackup));
-        window.FieldUI?.saveResult(ok ? `${getActiveProjectName()} 인건비 설정을 저장했습니다. 다른 현장과 기존 금액은 변경하지 않았습니다.` : "설정은 이 기기에 보관했습니다. 시트 저장을 확인하지 못했으니 미전송 다시 저장을 눌러주세요.", !ok);
+        const recordsOk = !changed.length || await syncWorkRowsWithOverlay(changed, "이 현장의 인력 이름을 저장하는 중입니다");
+        const ok = recordsOk && getSyncEndpoint() && await runWithSyncOverlay("이 현장의 인건비 기준을 저장하는 중입니다", syncSettingsBackup);
+        window.FieldUI?.saveResult(ok ? `${getActiveProjectName()} 인건비 설정을 저장했습니다. 다른 현장과 기존 금액은 변경하지 않았습니다.` : "설정은 이 기기에 보관했습니다. 관리·설정에서 관리자 확인 후 '보관된 관리 설정 다시 저장'을 눌러주세요.", !ok);
       } catch (error) { showInputError(form.elements.laborRate, error.message); }
     });
     form.querySelector("[data-remove-labor]")?.addEventListener("click", () => removeSettingItem("labor", oldName));
@@ -3178,6 +3258,7 @@ function renderLaborSettings() {
 }
 
 function updateLaborSetting(oldName, name, rate, renameRecords) {
+  if (!window.AdministratorAccess?.token()) throw new Error("관리자 확인 후 인건비 기준을 변경해주세요.");
   if (!name || name.length > 80) throw new Error("인력 이름을 1~80자로 입력해주세요.");
   if (!Number.isSafeInteger(rate) || rate < 0) throw new Error("1공수 단가를 원 단위의 0 이상 정수로 입력해주세요.");
   if (name !== oldName && state.config.labor.includes(name)) throw new Error("이 현장에 같은 이름이 있습니다. 기존 항목을 수정해주세요.");
@@ -3207,7 +3288,7 @@ function renderProjectSettings() {
         ${project.managed ? '<span class="pill muted">자동 연결</span>' : `<button class="icon-btn delete" type="button" title="프로젝트 삭제" data-remove-project="${escapeAttr(project.name)}" ${state.projects.length <= 1 ? "disabled" : ""}>X</button>`}
       </header>
       <p>${project.syncEndpoint ? "구글시트 연결됨" : "URL 미등록"}</p>
-      ${projectPasswordUrl(project) ? `<a class="secondary-btn" href="${escapeAttr(projectPasswordUrl(project))}" target="_blank" rel="noopener noreferrer">${escapeHtml(project.name)} 비밀번호 설정·변경</a><p class="settings-help">구글 관리자 전용 · 새 비밀번호 4자 이상 · 다른 현장 비밀번호는 그대로 유지</p>` : ""}
+      ${projectPasswordUrl(project) ? `<a class="secondary-btn" href="${escapeAttr(projectPasswordUrl(project))}" target="_blank" rel="noopener noreferrer">${escapeHtml(project.name)} 비밀번호 설정·변경</a><p class="settings-help">공통 관리자 비밀번호로 확인 · 새 비밀번호 4자 이상 · 다른 현장 비밀번호는 그대로 유지</p>` : ""}
     `;
     elements.projectSettings.append(card);
   });
@@ -3258,6 +3339,7 @@ async function refreshProjectDirectory(event) {
 }
 
 function addProject() {
+  if (!ensureSettingsAdministrator()) return;
   const name = elements.newProjectName.value.trim();
   const endpoint = elements.newProjectEndpoint.value.trim();
   if (!name) {
@@ -3279,11 +3361,12 @@ function addProject() {
   elements.newProjectEndpoint.value = "";
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
   window.alert("프로젝트 목록에 추가했습니다. 해당 현장을 선택하고 비밀번호로 접속하면 연결을 확인합니다.");
 }
 
 function removeProject(name) {
+  if (!ensureSettingsAdministrator()) return;
   if (state.projects.length <= 1) return;
   const confirmed = window.confirm(`${name} 프로젝트를 목록에서 삭제할까요? 구글시트 데이터는 삭제되지 않습니다.`);
   if (!confirmed) return;
@@ -3295,7 +3378,7 @@ function removeProject(name) {
   delete state.projectConfigs[name];
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function addSummaryExtraItem() {
@@ -3489,6 +3572,7 @@ function renderEditableTags(container, type, values) {
 }
 
 function addProcess() {
+  if (!ensureSettingsAdministrator()) return;
   const name = elements.newProcessName.value.trim();
   if (!name) return;
   if (!state.config.processes.some((process) => process.name === name)) {
@@ -3497,10 +3581,11 @@ function addProcess() {
   elements.newProcessName.value = "";
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function addSubProcess() {
+  if (!ensureSettingsAdministrator()) return;
   const parent = elements.subProcessParent.value;
   const name = elements.newSubProcessName.value.trim();
   if (!parent || !name) return;
@@ -3512,29 +3597,32 @@ function addSubProcess() {
   elements.newSubProcessName.value = "";
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function removeProcess(name) {
+  if (!ensureSettingsAdministrator()) return;
   const confirmed = window.confirm(`${name} 주공정을 삭제할까요?`);
   if (!confirmed) return;
   state.config.processes = state.config.processes.filter((process) => process.name !== name);
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function removeSubProcess(processName, subName) {
+  if (!ensureSettingsAdministrator()) return;
   state.config.processes = state.config.processes.map((process) => {
     if (process.name !== processName) return process;
     return { ...process, subs: process.subs.filter((sub) => sub !== subName) };
   });
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function quickAddSetting() {
+  if (!ensureSettingsAdministrator()) return;
   const type = elements.quickAddType.value;
   const name = elements.quickAddName.value.trim();
   if (!name) return;
@@ -3548,20 +3636,22 @@ function quickAddSetting() {
   elements.quickAddName.value = "";
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 function removeSettingItem(type, value) {
+  if (!ensureSettingsAdministrator()) return;
   const key = type === "payment" ? "payments" : type;
   if (type === "labor" && !window.confirm(`${getActiveProjectName()}의 인건비 목록에서 ${value}을(를) 삭제할까요? 기존 업무 기록과 금액은 그대로 남습니다.`)) return;
   state.config[key] = state.config[key].filter((item) => item !== value);
   if (type === "labor") delete state.config.laborRates[value];
   saveState();
   renderAll();
-  queueSharedBackup();
+  queueSettingsBackup();
 }
 
 async function renameSettingItem(type, oldValue) {
+  if (!ensureSettingsAdministrator()) return;
   const key = settingConfigKey(type);
   const input = window.prompt(`${settingTypeLabel(type)} 이름을 수정하세요.`, oldValue);
   if (input === null) return;
@@ -3581,6 +3671,7 @@ async function renameSettingItem(type, oldValue) {
   if (!confirmed) return;
 
   state.config[key] = state.config[key].map((item) => item === oldValue ? nextValue : item);
+  stageSettingsBackup();
 
   const field = settingEntryField(type);
   const projectName = getActiveProjectName();
@@ -3607,13 +3698,12 @@ async function renameSettingItem(type, oldValue) {
 
   if (changedEntries.length) {
     await syncWorkRowsWithOverlay(changedEntries, "기준 목록 수정 내용을 업무현황에 반영하는 중입니다");
-    return;
   }
 
   if (getSyncEndpoint()) {
-    await runWithSyncOverlay("기준 목록을 동기화하는 중입니다", syncSharedBackup);
+    await runWithSyncOverlay("기준 목록을 동기화하는 중입니다", syncSettingsBackup);
   } else {
-    queueSharedBackup();
+    queueSettingsBackup();
   }
 }
 
@@ -3641,7 +3731,7 @@ function renderSyncState() {
   const endpoint = getSyncEndpoint();
   elements.syncEndpoint.value = endpoint;
   elements.syncEndpoint.readOnly = Boolean(getActiveProject().managed);
-  elements.saveSyncButton.disabled = Boolean(getActiveProject().managed);
+  elements.saveSyncButton.disabled = !window.AdministratorAccess?.token() || Boolean(getActiveProject().managed);
   const rows = pendingRecords();
   const conflicts = rows.filter((row) => row.status === "conflict").length;
   const sharedPending = Boolean(state.pendingShared[getActiveProjectName()]);
@@ -3665,6 +3755,13 @@ async function syncPayload(type, records, extra = {}) {
   if (navigator.onLine === false) return false;
   syncInFlight += 1;
   try {
+    if (extra.settingsUpdate === true) {
+      const before = await loadSheetBackupJsonp(accessKey);
+      if (before.settingsProtection !== true || before.scriptVersion !== REQUIRED_SCRIPT_VERSION) return false;
+      const revision = Number(before.stateData?.settingsRevision) || 0;
+      const same = ["config", "projectSettings", "projects"].every(field => stableJson(before.stateData?.[field]) === stableJson(extra.stateData?.[field]));
+      if (revision !== extra.expectedSettingsRevision && !(same && revision === extra.expectedSettingsRevision + 1)) return false;
+    }
     if (["workEntries", "materialOrders"].includes(type)) {
       const before = await loadSheetBackupJsonp(accessKey);
       const field = type === "workEntries" ? "entries" : "materialOrders";
@@ -3704,7 +3801,13 @@ async function syncPayload(type, records, extra = {}) {
     const backup = await loadSheetBackupJsonp(accessKey);
     if (backup.scriptVersion !== REQUIRED_SCRIPT_VERSION) return false;
     if (type === "appState") {
-      return ["config", "extraSummaryItems", "deletedRecords", "projectSettings"].every((field) => stableJson(backup.stateData?.[field]) === stableJson(extra.stateData?.[field]));
+      const fields = extra.settingsUpdate ? ["config", "projectSettings", "projects"] : ["extraSummaryItems", "deletedRecords", "summaryRange"];
+      const ok = fields.every(field => stableJson(backup.stateData?.[field]) === stableJson(extra.stateData?.[field]));
+      if (extra.settingsUpdate && ok) {
+        state.settingsRevisions ||= {};
+        state.settingsRevisions[getActiveProjectName()] = Number(backup.stateData?.settingsRevision) || 0;
+      }
+      return ok;
     }
     if (type === "workEntries") {
       const remote = new Map((backup.workEntries || []).map((record) => [record.id, record]));
@@ -3800,10 +3903,7 @@ function setManualSyncBusy(isBusy) {
 function buildSharedStatePayload() {
   return {
     project: getActiveProjectName(),
-    projectSettings: { constructionStartDate: getActiveProject().constructionStartDate || "" },
     savedAt: new Date().toISOString(),
-    projects: state.projects,
-    config: clone(state.config),
     extraSummaryItems: projectExtraSummaryItems(),
     deletedRecords: state.deletedRecords || { work: [], material: [] },
     summaryRange: {
@@ -3876,16 +3976,16 @@ async function restoreFromGoogleSheet(options = {}) {
     state.materialOrders = mergeProjectRecords(state.materialOrders, normalizeMaterialOrders(backup.materialOrders), projectName, "material");
 
     const pendingShared = state.pendingShared[projectName];
-    if (pendingShared) {
-      state.config = normalizeConfig(pendingShared.config || state.projectConfigs[projectName] || sourceData.config);
-      if (pendingShared.projectSettings) getActiveProject().constructionStartDate = pendingShared.projectSettings.constructionStartDate || "";
-    } else if (!stateData.config) {
-      state.config = normalizeConfig(state.projectConfigs[projectName] || sourceData.config);
+    state.settingsRevisions ||= {};
+    state.pendingSettings ||= {};
+    state.settingsRevisions[projectName] = Number(stateData.settingsRevision) || 0;
+    if (pendingShared?.config && !state.pendingSettings[projectName] && stableJson(normalizeConfig(pendingShared.config)) !== stableJson(normalizeConfig(stateData.config || sourceData.config))) {
+      state.pendingSettings[projectName] = { stateData: { config: clone(pendingShared.config), projectSettings: clone(pendingShared.projectSettings || {}), projects: clone(pendingShared.projects || state.projects) }, expectedRevision: state.settingsRevisions[projectName], needsReview: true };
     }
-    if (stateData.projectSettings && !pendingShared) getActiveProject().constructionStartDate = stateData.projectSettings.constructionStartDate || "";
-    if (stateData.config && !pendingShared) {
-      state.config = normalizeConfig(stateData.config);
-    }
+    const pendingSettings = state.pendingSettings[projectName];
+    const settings = pendingSettings && !pendingSettings.needsReview ? pendingSettings.stateData : stateData;
+    state.config = normalizeConfig(settings.config || state.projectConfigs[projectName] || sourceData.config);
+    if (settings.projectSettings) getActiveProject().constructionStartDate = settings.projectSettings.constructionStartDate || "";
 
     if (Array.isArray(stateData.projects) && stateData.projects.length) {
       state.projects = mergeProjects(stateData.projects, state.projects);
@@ -4475,7 +4575,10 @@ function loadState() {
     }
     loaded.projectConfigs = Object.fromEntries(Object.entries(parsed.projectConfigs || {}).map(([name, config]) => [name, normalizeConfig(config)]));
     if (!Object.hasOwn(loaded.projectConfigs, loaded.activeProject)) loaded.projectConfigs[loaded.activeProject] = clone(loaded.config);
-    loaded.config = normalizeConfig(loaded.pendingShared[loaded.activeProject]?.config || loaded.projectConfigs[loaded.activeProject]);
+    loaded.pendingSettings = parsed.pendingSettings && typeof parsed.pendingSettings === "object" ? parsed.pendingSettings : {};
+    loaded.settingsRevisions = parsed.settingsRevisions && typeof parsed.settingsRevisions === "object" ? parsed.settingsRevisions : {};
+    const pendingSettings = loaded.pendingSettings[loaded.activeProject];
+    loaded.config = normalizeConfig(pendingSettings && !pendingSettings.needsReview ? pendingSettings.stateData.config : loaded.projectConfigs[loaded.activeProject]);
     return loaded;
   } catch {
     storageLoadFailed = true;

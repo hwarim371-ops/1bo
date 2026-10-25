@@ -28,12 +28,13 @@ function backend() {
     SpreadsheetApp: { getActiveSpreadsheet:()=>null,flush(){},openById:id=>{assert.ok(sheets.has(id)); return sheets.get(id)},create(){creates++;if(failCreate)throw new Error("network interrupted");const id="sheet-"+creates,tabs=new Map();const ss={getId:()=>id,setSpreadsheetTimeZone(){},getSheetByName:n=>tabs.get(n),insertSheet:n=>{const tab=sheet();tabs.set(n,tab);return tab}};sheets.set(id,ss);return ss;} },
     LockService: {getScriptLock:()=>({waitLock(){const fn=onLock;onLock=null;fn?.()},releaseLock(){},hasLock:()=>true})},
     ContentService: {MimeType:{JSON:1,JAVASCRIPT:2},createTextOutput:text=>({text,setMimeType(){return this}})},
-    HtmlService: {createHtmlOutput:text=>({text,setTitle(){return this},addMetaTag(){return this}})}
+    HtmlService: {XFrameOptionsMode:{ALLOWALL:1},createHtmlOutput:text=>({text,setTitle(){return this},addMetaTag(){return this},setXFrameOptionsMode(){return this}})}
   });
   const run = code => vm.runInContext(code,context);
   run(fs.readFileSync(path.join(__dirname,"..","password-throttle.gs"),"utf8"));
   run(fs.readFileSync(path.join(__dirname,"..","project-connector.gs"),"utf8"));
   run(fs.readFileSync(path.join(__dirname,"..","admin-auth.gs"),"utf8"));
+  run(fs.readFileSync(path.join(__dirname,"..","settings-guard.gs"),"utf8"));
   run("setupConnector()");
   run('setupAdministrator({password:"0123",confirm:"0123"})');
   const token = run('loginAdministrator("0123").token');
@@ -101,6 +102,34 @@ test("five wrong administrator passwords lock login for fifteen minutes without 
 test("administrator state is rechecked under the project mutation lock",()=>{
   const b=backend();b.create();b.onLock(()=>b.run(`logoutAdministrator(${JSON.stringify(b.token)})`));
   assert.throws(()=>b.change(),/만료/);assert.equal(b.get().ok,true);
+});
+
+test("central HTTP login, verification and logout are compatible with legacy administrator bridge",()=>{
+  const b=backend();b.create();const before=[...b.properties];
+  const login=b.post({action:'administratorLogin',password:'0123'});assert.equal(login.ok,true);
+  assert.equal(b.post({action:'verifyAdministrator',adminToken:login.token}).ok,true);
+  assert.equal(b.post({action:'logoutAdministrator',adminToken:login.token}).ok,true);
+  assert.equal(b.post({action:'verifyAdministrator',adminToken:login.token}).ok,false);
+  assert.equal(b.get().ok,true);assert.deepEqual([...b.properties],before);
+});
+
+test("browser administrator callback is origin-bound, nonce-bound and only returns session results",()=>{
+  const b=backend(),params={origin:'https://hwarim371-ops.github.io',requestId:'12345678-1234-1234-1234-123456789012',adminBrowserAction:'login',password:'0123'};
+  const html=b.run(`doPost({parameter:${JSON.stringify(params)}}).text`);
+  assert.match(html,/window.top.postMessage/);assert.match(html,/hwarim-administrator/);assert.match(html,/https:\/\/hwarim371-ops.github.io/);
+  assert.ok(!html.includes('"password"'));assert.ok(!html.includes('"0123"'));new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);
+  assert.throws(()=>b.run(`doPost({parameter:${JSON.stringify({...params,origin:'https://evil.invalid'})}})`),/경로/);
+  assert.throws(()=>b.run(`doPost({parameter:${JSON.stringify({...params,requestId:'short'})}})`),/경로/);
+});
+
+test("central project password can edit records but cannot overwrite manager settings",()=>{
+  const b=backend();b.create();const settings={config:{labor:['owner']},projectSettings:{constructionStartDate:'2026-01-01'},projects:[]};
+  assert.equal(b.post({type:'appState',stateData:settings,settingsUpdate:true,expectedSettingsRevision:0,adminToken:b.token}).ok,true);
+  assert.equal(b.post({type:'appState',stateData:{config:{labor:['staff']},extraSummaryItems:[{amount:5}]}}).ok,true);
+  assert.deepEqual(b.get().stateData.config,settings.config);assert.equal(b.get().stateData.extraSummaryItems[0].amount,5);
+  assert.equal(b.post({type:'appState',stateData:settings,settingsUpdate:true,expectedSettingsRevision:1}).ok,false);
+  assert.equal(b.post({type:'workEntries',records:[{id:'staff-work',cost:12}]}).ok,true);
+  assert.equal(b.get().settingsProtection,true);
 });
 
 test("administrator setup script compiles and never stores password in browser persistence",()=>{
@@ -205,8 +234,8 @@ test("record round trip preserves zero, multiline memo, contract and sheet isola
 test("material, large settings and formula-shaped text round trip",()=>{
   const b=backend();b.create();assert.equal(b.post({type:"materialOrders",records:[{id:"m1",product:"'+label",orderAmount:100,creditAmount:0}]}).ok,true);
   assert.equal(b.get().materialOrders[0].product,"'+label");assert.equal(b.get().materialOrders[0].creditAmount,0);
-  const stateData={config:{memo:"long ".repeat(18000)},projectSettings:{constructionStartDate:"2026-10-01"}};
-  assert.equal(b.post({type:"appState",stateData}).ok,true);assert.deepEqual(b.get().stateData.config,stateData.config);
+  const stateData={config:{memo:"long ".repeat(18000)},projectSettings:{constructionStartDate:"2026-10-01"},projects:[]};
+  assert.equal(b.post({type:"appState",stateData,settingsUpdate:true,expectedSettingsRevision:0,adminToken:b.token}).ok,true);assert.deepEqual(b.get().stateData.config,stateData.config);
 });
 test("invalid IDs, duplicate IDs and invalid numbers do not replace previous records",()=>{
   const b=backend();b.create();b.post({type:"workEntries",records:[{id:"a",cost:123}]});

@@ -199,3 +199,14 @@ body .compact-view[data-list-text-size] .table-summary-card :is(strong, span) { 
   .compact-view .inline-edit-bar { flex-wrap: wrap; }
   .compact-view .inline-edit-bar > strong, .compact-view .inline-edit-bar > span { width: 100%; }
 }
+
+.administrator-settings-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.administrator-settings-fields:disabled :is(input, select, button) { opacity: .65; cursor: not-allowed; }
+.administrator-panel { border: 2px solid #ac8455; background: #fff4df; }
+.administrator-panel p { line-height: 1.65; }
+.administrator-dialog { width: min(480px, calc(100% - 24px)); max-height: 90vh; padding: 24px; border: 1px solid #8b6a42; border-radius: 16px; background: #fffaf2; color: #302113; }
+.administrator-dialog::backdrop { background: rgba(25, 18, 12, .58); }
+.administrator-dialog fieldset { display: grid; gap: 14px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.administrator-dialog input { width: 100%; min-height: 52px; font-size: 20px; padding: 12px; }
+.administrator-dialog p { line-height: 1.65; overflow-wrap: anywhere; }
+.administrator-dialog button { min-height: 50px; }

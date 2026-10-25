@@ -8,7 +8,7 @@ const root = path.join(__dirname, "..");
 function frontend() {
   const storage = new Map();
   const context = vm.createContext({
-    window: { APP_CONFIG: { projects: [{name:"P"},{name:"Q"}] }, SHEET_DATA: {config:{labor:["인부30"],processes:[{name:"공정",subs:["세부"]}]}}, alert(){} },
+    window: { APP_CONFIG: { projects: [{name:"P"},{name:"Q"}] }, AdministratorAccess:{token:()=>"fake-admin-session",ensure:()=>true}, SHEET_DATA: {config:{labor:["인부30"],processes:[{name:"공정",subs:["세부"]}]}}, alert(){} },
     document: {addEventListener(){}}, navigator:{}, console,
     localStorage: {getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)}
   });
@@ -53,10 +53,16 @@ test("legacy global config migrates only to its last active project",()=>{
   run('state=loadState();activateProject("P")');assert.equal(run('state.config.labor[0]'),"인부30");
   run('activateProject("Q")');assert.equal(run('state.config.labor[0]'),"기존45");
 });
-test("pending config and shared payloads remain scoped and immutable",()=>{
-  const {run}=frontend();run('elements.summaryStart={value:""};elements.summaryEnd={value:""};state.pendingShared.Q={config:{labor:["대기"],laborRates:{대기:440000}}};activateProject("Q");const payload=buildSharedStatePayload();updateLaborSetting("대기","대기",550000,false)');
+test("pending settings and ordinary record payloads are separate and immutable",()=>{
+  const {run}=frontend();run('elements.summaryStart={value:""};elements.summaryEnd={value:""};state.pendingSettings.Q={stateData:{config:{labor:["대기"],laborRates:{대기:440000}}},expectedRevision:2};activateProject("Q");const payload=buildSettingsPayload();const ordinary=buildSharedStatePayload();updateLaborSetting("대기","대기",550000,false)');
   assert.equal(run('payload.config.laborRates["대기"]'),440000);
   assert.equal(run('payload.projectConfigs'),undefined);
+  for(const key of ['config','projectSettings','projects','adminToken'])assert.equal(run(`ordinary.${key}`),undefined);
+});
+
+test("field users cannot edit labor references without administrator authentication",()=>{
+  const {run,plain}=frontend(),before=plain('state.config');run('window.AdministratorAccess.token=()=>""');
+  assert.throws(()=>run('updateLaborSetting("인부30","변경",1,true)'),/관리자/);assert.deepEqual(plain('state.config'),before);
 });
 test("password manager links use each project endpoint without credentials",()=>{
   const {run}=frontend();
@@ -67,29 +73,28 @@ test("password manager links use each project endpoint without credentials",()=>
 function legacy() {
   const hash = x=>crypto.createHash("sha256").update(x).digest("hex");
   const props=new Map([["PROJECT_PASSWORD_SHA256",hash("original")],["PROJECT_SPREADSHEET_ID","unchanged"]]);
-  let active="owner@test";
   const context=vm.createContext({
     PASSWORD_PROPERTY:"PROJECT_PASSWORD_SHA256",sha256_:hash,secureEqual_:(a,b)=>a===b,
-    Session:{getActiveUser:()=>({getEmail:()=>active}),getEffectiveUser:()=>({getEmail:()=>"owner@test"})},
+    requirePasswordAdministrator_:token=>{if(token!=="test-admin-session")throw new Error("관리자 확인 필요")},
     PropertiesService:{getScriptProperties:()=>({getProperty:k=>props.get(k)||null,setProperties:values=>Object.entries(values).forEach(([k,v])=>props.set(k,v))})},
     LockService:{getScriptLock:()=>({waitLock(){},releaseLock(){}})}
   });
   vm.runInContext(fs.readFileSync(path.join(root,"legacy-password-admin.gs"),"utf8"),context);
-  return {run:code=>vm.runInContext(code,context),props,hash,active:v=>active=v};
+  return {run:code=>vm.runInContext(code,context),props,hash};
 }
-test("legacy password manager rejects non-owner access without changing anything",()=>{
-  const b=legacy(),before=[...b.props];for(const who of ["","staff@test"]){b.active(who);assert.throws(()=>b.run('passwordManagerState()'));assert.throws(()=>b.run('changeProjectPassword({password:"0123",expectedRevision:0})'));}
+test("legacy password manager rejects missing administrator session without changing anything",()=>{
+  const b=legacy(),before=[...b.props];assert.throws(()=>b.run('passwordManagerState()'),/관리자/);assert.throws(()=>b.run('changeProjectPassword({password:"0123",expectedRevision:0})'),/관리자/);
   assert.deepEqual([...b.props],before);
 });
 test("legacy four-character password preserves zero and only updates credential properties",()=>{
-  const b=legacy();b.run('changeProjectPassword({password:"0123",expectedRevision:0})');
+  const b=legacy();b.run('changeProjectPassword({adminToken:"test-admin-session",password:"0123",expectedRevision:0})');
   assert.equal(b.props.get("PROJECT_PASSWORD_SHA256"),b.hash("0123"));assert.equal(b.props.get("PROJECT_SPREADSHEET_ID"),"unchanged");
-  assert.equal(b.run('passwordManagerState().revision'),1);assert.ok(!JSON.stringify([...b.props]).includes('"0123"'));
+  assert.equal(b.run('passwordManagerState("test-admin-session").revision'),1);assert.ok(!JSON.stringify([...b.props]).includes('"0123"'));
 });
 test("legacy password validation, retries and stale forms preserve the latest credential",()=>{
-  const b=legacy();for(const password of ['"123"','"    "','1234','"x".repeat(129)'])assert.throws(()=>b.run(`changeProjectPassword({password:${password},expectedRevision:0})`));
-  b.run('changeProjectPassword({password:"0123",expectedRevision:0})');b.run('changeProjectPassword({password:"0123",expectedRevision:0})');
-  assert.throws(()=>b.run('changeProjectPassword({password:"4567",expectedRevision:0})'));
+  const b=legacy();for(const password of ['"123"','"    "','1234','"x".repeat(129)'])assert.throws(()=>b.run(`changeProjectPassword({adminToken:"test-admin-session",password:${password},expectedRevision:0})`),/4~128/);
+  b.run('changeProjectPassword({adminToken:"test-admin-session",password:"0123",expectedRevision:0})');b.run('changeProjectPassword({adminToken:"test-admin-session",password:"0123",expectedRevision:0})');
+  assert.throws(()=>b.run('changeProjectPassword({adminToken:"test-admin-session",password:"4567",expectedRevision:0})'),/다른 화면/);
   assert.equal(b.props.get("PROJECT_PASSWORD_SHA256"),b.hash("0123"));
   new vm.Script(b.run('LEGACY_PASSWORD_HTML').match(/<script>([\s\S]*?)<\/script>/)[1]);
 });
