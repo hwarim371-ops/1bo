@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#4a2e17">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="화림 업무일지">
+  <title>화림 업무전산시스템</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css?v=20261025-field-ui">
+  <link rel="stylesheet" href="field-ui.css?v=20261025-admin-settings">
+</head>
+<body>
+  <section class="access-gate" id="accessGate" aria-labelledby="accessTitle">
+    <form class="access-card" id="accessForm">
+      <div class="access-brand">J2</div>
+      <div>
+        <p class="eyebrow">화림 업무전산시스템</p>
+        <h2 id="accessTitle">현장 프로젝트 접속</h2>
+        <p class="access-description">프로젝트 비밀번호 확인 후 최신 구글시트 자료를 자동으로 동기화합니다.</p>
+      </div>
+      <label>
+        <span>현장 프로젝트</span>
+        <select id="accessProjectSelect"></select>
+      </label>
+      <label>
+        <span>프로젝트 비밀번호</span>
+        <input id="accessPassword" type="password" autocomplete="current-password" required>
+      </label>
+      <p class="access-error hidden" id="accessError" role="alert"></p>
+      <button class="primary-btn access-submit" id="accessSubmitButton" type="submit">비밀번호 확인 후 접속</button>
+      <details class="access-help"><summary>접속 도움말 · 관리자 메뉴</summary>
+      <div class="project-connect-actions">
+        <a class="secondary-btn" data-project-manager target="_blank" rel="noopener noreferrer">프로젝트 추가·비밀번호 변경</a>
+        <button class="secondary-btn" data-refresh-projects type="button">목록 새로고침</button>
+      </div>
+      <p class="settings-help" data-project-directory-status role="status">새 현장은 공통 관리자 비밀번호로 확인 후 생성합니다.</p>
+      <button class="secondary-btn" id="connectionCheckButton" type="button">선택 현장 연결 점검</button>
+      <p class="settings-help" id="connectionStatus" role="status" aria-live="polite">비밀번호 없이 연결 정보를 점검합니다. 현장 설정과 기록은 변경하지 않습니다.</p>
+      </details>
+    </form>
+  </section>
+
+  <section class="sync-overlay hidden" id="syncOverlay" aria-live="polite" aria-busy="true">
+    <div class="sync-overlay-card">
+      <div class="sync-spinner" id="syncSpinner"></div>
+      <p class="eyebrow" id="syncOverlayEyebrow">구글시트 동기화</p>
+      <h2 id="syncOverlayTitle">최신 자료를 불러오는 중입니다</h2>
+      <p id="syncOverlayMessage">잠시만 기다려주세요.</p>
+    </div>
+  </section>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="주요 메뉴">
+      <div class="brand-block">
+        <div class="brand-mark">J2</div>
+        <div>
+          <p class="eyebrow">화림 업무전산시스템</p>
+          <h1 id="brandProjectTitle">현장 프로젝트</h1>
+        </div>
+      </div>
+
+      <div class="sidebar-project">
+        <label for="projectSelect">현장프로젝트</label>
+        <select id="projectSelect" aria-label="프로젝트 선택"></select>
+      </div>
+
+      <nav class="nav-list" aria-label="화면 이동">
+        <button class="nav-item active" data-view="input">업무 쓰기</button>
+        <button class="nav-item" data-view="logs">업무 보기</button>
+        <button class="nav-item" data-view="materialInput">자재 쓰기</button>
+        <button class="nav-item" data-view="materials">자재 보기</button>
+        <button class="nav-item" data-view="summary">비용 정산</button>
+        <button class="nav-item" data-view="settings">관리·설정</button>
+      </nav>
+
+      <div class="side-note">
+        <span class="status-dot"></span>
+        <span id="sidebarStatus">원본 시트 기준 적용</span>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="todayLabel">오늘</p>
+          <h2 id="viewTitle">업무등록</h2>
+        </div>
+        <div class="display-tools">
+          <label for="readingSize">글자 크기</label>
+          <select id="readingSize"><option value="normal">기본</option><option value="large">크게</option><option value="larger">더 크게</option></select>
+          <button class="secondary-btn" id="lockProjectButton" type="button">현장 잠금</button>
+        </div>
+      </header>
+      <section id="saveResult" class="save-result hidden" role="status" aria-live="polite"></section>
+
+      <section id="syncNotice" class="sync-notice hidden" aria-live="polite">
+        <p data-sync-message></p>
+        <div class="row-actions">
+          <button id="retryPendingButton" class="secondary-btn" type="button">미전송 다시 저장</button>
+          <button id="backupLocalButton" class="secondary-btn" type="button">기기 백업 내려받기</button>
+        </div>
+        <div data-sync-conflicts></div>
+      </section>
+
+      <section class="metrics-grid hidden" id="metricsGrid" aria-label="화면 요약">
+        <article class="metric-panel">
+          <span id="metricLabelA">오늘 업무</span>
+          <strong id="metricEntries">0건</strong>
+        </article>
+        <article class="metric-panel">
+          <span id="metricLabelB">투입 공수</span>
+          <strong id="metricLabor">0.0</strong>
+        </article>
+        <article class="metric-panel">
+          <span id="metricLabelC">투입 장비</span>
+          <strong id="metricEquipment">0대</strong>
+        </article>
+        <article class="metric-panel warning">
+          <span id="metricLabelD">확인 필요</span>
+          <strong id="metricWarnings">0건</strong>
+        </article>
+      </section>
+
+      <section class="view active" id="view-input" aria-labelledby="viewTitle">
+        <div class="entry-dashboard">
+          <form class="work-panel entry-form-panel" id="entryForm">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">업무현황 등록</p>
+                <h3>오늘 한 일을 기록하세요</h3>
+              </div>
+              <span class="pill">버튼을 눌러야 저장됩니다</span>
+            </div>
+
+            <div class="form-section process-entry-section">
+              <div class="section-label-row">
+                <div class="section-label">1. 날짜와 공정</div>
+                <span>필수 선택</span>
+              </div>
+              <div class="entry-basic-grid">
+                <label class="entry-date-field">
+                  <span>날짜</span>
+                  <input id="entryDate" name="date" type="date" required>
+                </label>
+                <label class="entry-main-field">
+                  <span>주공정</span>
+                  <select id="mainProcess" name="mainProcess" required></select>
+                </label>
+                <label class="entry-sub-field">
+                  <span>부공정</span>
+                  <select id="subProcess" name="subProcess" required></select>
+                </label>
+              </div>
+
+              <label class="detail-note-field">
+                <span class="detail-note-heading">
+                  <strong>세부공정 및 주요 작업내용</strong>
+                  <small>엔터는 줄바꿈</small>
+                </span>
+                <textarea id="detailProcess" name="detailProcess" rows="7" placeholder="진행한 작업, 확인한 문제, 협의·조치 결과를 자세히 기록하세요.&#10;예: 철골공사 견적 2개 업체 비교 후 단가와 포함 범위를 재조정함"></textarea>
+                <small class="field-help">길게 적어도 괜찮습니다. 기록을 볼 때는 짧게 접어 보여드립니다.</small>
+              </label>
+            </div>
+
+            <div class="form-section resource-entry-section">
+              <div class="section-label-row">
+                <div class="section-label">2. 인력·장비와 금액</div>
+                <span>인력 또는 장비</span>
+              </div>
+              <div class="resource-toolbar">
+                <div class="resource-kind-field">
+                  <span>투입 유형</span>
+                  <div class="segmented-control" role="radiogroup" aria-label="투입 유형">
+                    <button type="button" class="segment active" data-kind="labor">인력</button>
+                    <button type="button" class="segment" data-kind="equipment">장비</button>
+                  </div>
+                </div>
+                <label class="resource-count-field">
+                  <span id="resourceCountLabel">투입 인원 수</span>
+                  <select id="resourceCount">
+                    <option value="1" selected>1명</option>
+                    <option value="2">2명</option>
+                    <option value="3">3명</option>
+                    <option value="4">4명</option>
+                    <option value="5">5명</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="resource-row-list" id="resourceRows"></div>
+            </div>
+
+            <div class="form-section supplemental-note-section">
+              <div class="section-label-row">
+                <div class="section-label">3. 인력·금액 보충 메모</div>
+                <span>선택 입력</span>
+              </div>
+              <label class="supplemental-note-field">
+                <span>인력이름, 개별금액 또는 참고사항</span>
+                <textarea id="entryMemo" rows="2" placeholder="예: 홍길동 180,000원 / 오전 작업 / 업체 전달사항"></textarea>
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <span class="entry-save-help">작성 후 ‘업무현황 저장’을 누르세요.</span>
+              <button class="secondary-btn" id="addDraftButton" type="button">이어서 입력</button>
+              <button class="secondary-btn hidden" id="cancelEntryEditButton" type="button">수정 취소</button>
+              <button class="primary-btn" id="entrySubmitButton" type="button">업무현황 저장</button>
+            </div>
+
+            <div class="draft-tray hidden" id="draftTray">
+              <div class="draft-tray-heading">
+                <strong>함께 저장할 항목 (아직 시트에 저장되지 않음)</strong>
+                <span id="draftCount" class="pill muted">0건</span>
+              </div>
+              <div class="draft-list compact-draft-list" id="draftList"></div>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="view compact-view" id="view-logs" aria-labelledby="viewTitle">
+        <div class="work-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">업무현황</p>
+              <h3>공정 일보 표</h3>
+            </div>
+            <div class="inline-filters">
+              <input id="logDateFilter" type="date" aria-label="시작일 필터">
+              <input id="logEndDateFilter" type="date" aria-label="종료일 필터">
+              <select id="logProcessFilter" aria-label="공정 필터"></select>
+              <button class="secondary-btn" id="clearLogFilters" type="button">검색조건 지우기</button>
+              <button class="secondary-btn" id="toggleLogSheetEditButton" type="button">표 수정모드</button>
+            </div>
+          </div>
+          <div class="inline-edit-bar hidden" id="logEditBar">
+            <strong>업무현황 수정 중</strong>
+            <span>표 안의 값을 고친 뒤 저장하세요.</span>
+            <div class="row-actions">
+              <button class="primary-btn" id="logInlineSaveButton" type="button">수정 저장</button>
+              <button class="secondary-btn" id="logInlineCancelButton" type="button">취소</button>
+            </div>
+          </div>
+          <div class="log-toolbar-grid">
+            <div class="contract-toolbar hidden" id="contractToolbar">
+              <div>
+                <strong>도급 정리</strong>
+                <span id="contractSelectionSummary">선택 0건</span>
+              </div>
+              <label>총 도급금액 (원)<input id="contractTotalAmount" type="number" min="0" step="1" inputmode="numeric" placeholder="예: 2100000" data-money></label>
+              <button class="primary-btn" id="applyContractButton" type="button">도급금액 분배</button>
+              <button class="secondary-btn danger-lite" id="cancelContractButton" type="button">도급 취소</button>
+              <button class="secondary-btn" id="clearContractSelection" type="button">선택 해제</button>
+            </div>
+            <div class="bulk-edit-bar" id="logBulkEditBar">
+              <div>
+                <strong>검색된 업무 전체 일괄수정</strong>
+                <span>검색 결과 전체에 적용합니다. 다른 페이지의 항목도 포함됩니다.</span>
+              </div>
+              <select id="logBulkField" aria-label="업무현황 일괄수정 항목">
+              <option value="mainProcess">주공정</option>
+              <option value="subProcess">부공정</option>
+                <option value="detailProcess">세부공정</option>
+                <option value="equipment">장비</option>
+                <option value="labor">인부</option>
+                <option value="workAmount">투입공수</option>
+                <option value="costType">비용 구분</option>
+                <option value="cost">비용</option>
+                <option value="paymentStatus">결제여부</option>
+                <option value="memo">비고</option>
+              </select>
+              <input id="logBulkValue" type="text" placeholder="새 값 입력">
+              <button class="secondary-btn" id="applyLogBulkEdit" type="button">일괄수정</button>
+            </div>
+          </div>
+          <div class="table-summary-grid" id="logTableSummary" aria-label="업무현황 합계"></div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>날짜</th>
+                  <th>주공정</th>
+                  <th>부공정</th>
+                  <th>세부공정</th>
+                  <th>장비</th>
+                  <th>인부</th>
+                  <th>투입공수</th>
+                  <th>비용 구분</th>
+                  <th>비용</th>
+                  <th>결제여부</th>
+                  <th>비고</th>
+                  <th>도급</th>
+                  <th>상태</th>
+                  <th>관리</th>
+                </tr>
+                <tr class="table-filter-row">
+                  <th><select id="logDateQuickFilter" aria-label="날짜 컬럼 필터"></select></th>
+                  <th><select id="logMainQuickFilter" aria-label="주공정 컬럼 필터"></select></th>
+                  <th><select id="logSubQuickFilter" aria-label="부공정 컬럼 필터"></select></th>
+                  <th><input id="logDetailFilter" type="search" placeholder="검색"></th>
+                  <th><select id="logEquipmentFilter" aria-label="장비 컬럼 필터"></select></th>
+                  <th><select id="logLaborFilter" aria-label="인부 컬럼 필터"></select></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                  <th><select id="logPaymentFilter" aria-label="결제여부 컬럼 필터"></select></th>
+                  <th><input id="logMemoFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="logTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-materialInput" aria-labelledby="viewTitle">
+        <div class="entry-dashboard">
+          <form class="work-panel entry-form-panel" id="materialForm">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">자재 발주 등록</p>
+                <h3>발주·비교·외상 정보를 한 번에 기록</h3>
+              </div>
+              <span class="pill">자재현황 탭으로 저장</span>
+            </div>
+
+            <div class="form-section">
+              <div class="section-label">1. 발주 기본 정보</div>
+              <div class="form-grid">
+                <label>
+                  <span>날짜</span>
+                  <input id="materialDate" type="date">
+                </label>
+                <label>
+                  <span>공정</span>
+                  <select id="materialProcess"></select>
+                </label>
+                <label>
+                  <span>제품</span>
+                  <input id="materialProduct" type="text" placeholder="예: 철근 13mm">
+                </label>
+                <label>
+                  <span>업체명</span>
+                  <input id="materialVendor" type="text" placeholder="예: 태양철강">
+                </label>
+                <label>
+                  <span>지역</span>
+                  <input id="materialArea" type="text">
+                </label>
+                <label>
+                  <span>발주 금액 (원)</span>
+                  <input id="materialOrderAmount" type="number" min="0" step="1" inputmode="numeric" data-money>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-label">2. 가격 비교와 외상</div>
+              <div class="form-grid">
+                <label>
+                  <span>비교 최저가 (원, 선택)</span>
+                  <input id="materialLowPrice" type="number" min="0" step="1" inputmode="numeric" data-money>
+                </label>
+                <label>
+                  <span>비교 최고가 (원, 선택)</span>
+                  <input id="materialHighPrice" type="number" min="0" step="1" inputmode="numeric" data-money>
+                </label>
+                <label>
+                  <span>아직 안 준 금액 (외상, 원)</span>
+                  <input id="materialCreditAmount" type="number" min="0" step="1" inputmode="numeric" data-money>
+                </label>
+                <label>
+                  <span>비고</span>
+                  <input id="materialMemo" type="text">
+                </label>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="secondary-btn hidden" id="cancelMaterialEditButton" type="button">수정 취소</button>
+              <button class="primary-btn" id="materialSubmitButton" type="submit">자재현황 저장</button>
+            </div>
+          </form>
+
+          <aside class="work-panel input-side-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">자재 입력 요약</p>
+                <h3>최근 발주</h3>
+              </div>
+              <span id="materialCount" class="pill muted">0건</span>
+            </div>
+            <div class="material-list" id="materialList"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view compact-view" id="view-materials" aria-labelledby="viewTitle">
+        <div class="work-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">자재현황</p>
+              <h3>자재 발주 현황 표</h3>
+            </div>
+            <div class="inline-filters">
+              <input id="materialStartDateFilter" type="date" aria-label="자재 시작일 필터">
+              <input id="materialEndDateFilter" type="date" aria-label="자재 종료일 필터">
+              <select id="materialProcessFilter" aria-label="자재 공정 필터"></select>
+              <input id="materialSearch" type="search" placeholder="제품·업체 검색">
+              <button class="secondary-btn" id="clearMaterialFilters" type="button">검색조건 지우기</button>
+              <button class="secondary-btn" id="toggleMaterialSheetEditButton" type="button">표 수정모드</button>
+            </div>
+          </div>
+          <div class="inline-edit-bar hidden" id="materialEditBar">
+            <strong>자재현황 수정 중</strong>
+            <span>표 안의 값을 고친 뒤 저장하세요.</span>
+            <div class="row-actions">
+              <button class="primary-btn" id="materialInlineSaveButton" type="button">수정 저장</button>
+              <button class="secondary-btn" id="materialInlineCancelButton" type="button">취소</button>
+            </div>
+          </div>
+          <div class="bulk-edit-bar" id="materialBulkEditBar">
+            <div>
+              <strong>검색된 자재 전체 일괄수정</strong>
+              <span>검색 결과 전체에 적용합니다. 다른 페이지의 항목도 포함됩니다.</span>
+            </div>
+            <select id="materialBulkField" aria-label="자재현황 일괄수정 항목">
+              <option value="process">공정</option>
+              <option value="product">제품</option>
+              <option value="vendor">업체명</option>
+              <option value="area">지역</option>
+              <option value="orderAmount">발주 금액</option>
+              <option value="lowPrice">최저가</option>
+              <option value="highPrice">최고가</option>
+              <option value="creditAmount">외상금액</option>
+              <option value="memo">비고</option>
+            </select>
+            <input id="materialBulkValue" type="text" placeholder="새 값 입력">
+            <button class="secondary-btn" id="applyMaterialBulkEdit" type="button">일괄수정</button>
+          </div>
+          <div class="table-summary-grid" id="materialTableSummary" aria-label="자재현황 합계"></div>
+          <div class="table-wrap">
+            <table class="data-table material-table">
+              <thead>
+                <tr>
+                  <th>날짜</th>
+                  <th>공정</th>
+                  <th>제품</th>
+                  <th>업체명</th>
+                  <th>지역</th>
+                  <th>발주 금액</th>
+                  <th>최저가</th>
+                  <th>최고가</th>
+                  <th>비고</th>
+                  <th>외상금액</th>
+                  <th>상태</th>
+                  <th>관리</th>
+                </tr>
+                <tr class="table-filter-row">
+                  <th><select id="materialDateQuickFilter" aria-label="자재 날짜 컬럼 필터"></select></th>
+                  <th><select id="materialProcessQuickFilter" aria-label="자재 공정 컬럼 필터"></select></th>
+                  <th><input id="materialProductFilter" type="search" placeholder="검색"></th>
+                  <th><input id="materialVendorFilter" type="search" placeholder="검색"></th>
+                  <th><input id="materialAreaFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                  <th><input id="materialMemoFilter" type="search" placeholder="검색"></th>
+                  <th></th>
+                  <th></th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="materialTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view compact-view" id="view-summary" aria-labelledby="viewTitle">
+        <div class="summary-stack">
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">최종 현황표</p>
+                <h3>비용·공정·외상 대시보드</h3>
+              </div>
+              <div class="inline-filters">
+                <label class="compact-date-label">
+                  <span>조회 시작일</span>
+                  <input id="summaryStart" type="date" aria-label="조회 시작일">
+                </label>
+                <label class="compact-date-label">
+                  <span>집계 종료일</span>
+                  <input id="summaryEnd" type="date" aria-label="집계 종료일">
+                </label>
+              </div>
+            </div>
+            <p class="eyebrow">조회 시작·종료일을 비우면 날짜 없는 기존 자료를 포함해 전체 금액을 합산합니다.</p>
+            <label class="construction-date-field">
+              <span>프로젝트 공사 시작일</span>
+              <input id="constructionStartDate" type="date" aria-label="프로젝트 공사 시작일 (관리자 설정)" disabled>
+              <small>조회 기간과 별도로 저장합니다. 미설정 시 가장 이른 현장 기록일을 사용합니다. 경과일은 시작일을 포함합니다.</small>
+            </label>
+            <div class="absolute-stat-strip" id="summaryCards"></div>
+            <p id="summaryAudit" class="summary-audit" role="status"></p>
+            <details id="summaryLedger" class="summary-ledger">
+              <summary>금액 계산 근거 확인</summary>
+              <div class="ledger-filters">
+                <label>항목 <select id="ledgerCategory"><option value="">전체 항목</option><option>인건비</option><option>장비대</option><option>자재비</option><option>기타·미분류</option><option>추가항목</option></select></label>
+                <label>결제 <select id="ledgerPayment"><option value="">전체 금액</option><option value="paid">지급액 있는 항목</option><option value="credit">외상 있는 항목</option><option value="issues">확인 필요한 항목</option></select></label>
+              </div>
+              <div class="ledger-scroll">
+                <table class="data-table"><thead><tr><th>날짜</th><th>구분</th><th>내용</th><th>총금액</th><th>지급액</th><th>외상</th><th>확인사항</th><th>원본</th></tr></thead><tbody id="ledgerBody"></tbody><tfoot id="ledgerTotal"></tfoot></table>
+              </div>
+            </details>
+            <form class="summary-extra-form" id="summaryExtraForm">
+              <input id="summaryExtraDate" type="date" aria-label="추가항목 발생일" required>
+              <input id="summaryExtraName" type="text" placeholder="추가 항목명">
+              <input id="summaryExtraAmount" type="number" min="0" step="1" placeholder="금액">
+              <select id="summaryExtraType" aria-label="추가 항목 결제 구분">
+                <option value="spent">현지출액</option>
+                <option value="credit">외상</option>
+              </select>
+              <button class="secondary-btn" type="submit">추가</button>
+            </form>
+            <div class="extra-chip-list" id="summaryExtraList"></div>
+          </section>
+
+          <section class="work-panel chart-dashboard-panel">
+            <div class="dashboard-tabs" id="summaryTabs" aria-label="최종현황 카테고리">
+              <button class="dashboard-tab active" type="button" data-summary-tab="total">전체 비용</button>
+              <button class="dashboard-tab" type="button" data-summary-tab="category">항목별 비용</button>
+              <button class="dashboard-tab" type="button" data-summary-tab="process">공정별 비용</button>
+              <button class="dashboard-tab" type="button" data-summary-tab="vendor">업체별 발주</button>
+              <button class="dashboard-tab" type="button" data-summary-tab="payment">결제·외상</button>
+            </div>
+
+            <div class="chart-panel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">선택 카테고리</p>
+                  <h3 id="summaryChartTitle">전체 비용</h3>
+                </div>
+                <span class="pill muted" id="summaryChartMode">그래프</span>
+              </div>
+              <div class="chart-canvas" id="summaryChart"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view compact-view" id="view-settings" aria-labelledby="viewTitle">
+        <div class="settings-stack">
+          <section class="work-panel administrator-panel" aria-label="관리 설정 권한">
+            <h3>관리 설정은 대표님만 변경합니다</h3>
+            <p>현장 추가·비밀번호·공정·인건비 기준·연결 설정에 적용됩니다. 업무·자재 작성과 수정은 현장 접속 후 그대로 이용하세요.</p>
+            <p id="administratorSettingsStatus" role="status">관리 설정 잠김</p>
+            <div class="form-actions"><button class="primary-btn" id="administratorUnlock" type="button">관리자 확인 후 설정 변경</button><button class="secondary-btn" id="administratorLock" type="button" hidden>관리 설정 잠그기</button><button class="secondary-btn" id="retrySettingsButton" type="button" hidden>보관된 관리 설정 다시 저장</button></div>
+          </section>
+          <fieldset id="administratorSettingsFields" class="settings-stack administrator-settings-fields" disabled>
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">프로젝트</p>
+                <h3>프로젝트 · 구글시트 연결</h3>
+              </div>
+              <span class="pill muted">새 현장 자동 연결</span>
+            </div>
+            <p class="settings-help">프로젝트 관리 화면에서 관리자 비밀번호로 확인한 뒤 <strong>현장명과 현장 비밀번호</strong>를 입력하면 전용 구글시트를 만들고 자동 연결합니다.</p>
+            <div class="project-connect-actions">
+              <a class="primary-btn" data-project-manager target="_blank" rel="noopener noreferrer">프로젝트 추가·비밀번호 변경</a>
+              <button class="secondary-btn" data-refresh-projects type="button">프로젝트 목록 새로고침</button>
+            </div>
+            <p class="settings-help" data-project-directory-status role="status">기존 현장 연결과 기록은 그대로 유지됩니다.</p>
+            <details class="project-manual-connect">
+              <summary>기존 Apps Script URL로 수동 연결</summary>
+              <form class="project-add-form" id="projectAddForm">
+              <input id="newProjectName" type="text" placeholder="프로젝트명">
+              <input id="newProjectEndpoint" type="url" placeholder="Apps Script 웹앱 URL">
+              <button class="secondary-btn" type="submit">프로젝트 추가</button>
+            </form>
+            <p class="settings-help">기존 현장도 아래 현장별 <strong>비밀번호 설정·변경</strong> 버튼에서 관리합니다. 비밀번호 관리 화면이 없는 별도 서버는 관리자 기능 업데이트가 필요합니다.</p>
+            </details>
+            <div id="projectSettings" class="settings-list project-settings-list"></div>
+          </section>
+
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">환경설정</p>
+                <h3>공정 설정</h3>
+              </div>
+              <span class="pill muted">추가·삭제 가능</span>
+            </div>
+            <div class="settings-control-grid">
+              <form class="quick-add" id="processAddForm">
+                <input id="newProcessName" type="text" placeholder="새 주공정">
+                <button class="secondary-btn" type="submit">주공정 추가</button>
+              </form>
+              <form class="quick-add" id="subProcessAddForm">
+                <select id="subProcessParent"></select>
+                <input id="newSubProcessName" type="text" placeholder="새 부공정">
+                <button class="secondary-btn" type="submit">부공정 추가</button>
+              </form>
+            </div>
+            <div id="processSettings" class="settings-list process-settings-list"></div>
+          </section>
+
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">기준 목록</p>
+                <h3>장비 · 결제여부</h3>
+              </div>
+              <span class="pill muted">현장 기준값</span>
+            </div>
+            <form class="quick-add" id="quickAddForm">
+              <select id="quickAddType" aria-label="추가 유형">
+                <option value="equipment">장비</option>
+                <option value="payment">결제여부</option>
+              </select>
+              <input id="quickAddName" type="text" placeholder="새 항목명">
+              <button class="secondary-btn" type="submit">추가</button>
+            </form>
+            <div class="settings-columns">
+              <div>
+                <h4>장비</h4>
+                <div id="equipmentSettings" class="tag-list editable-tags"></div>
+              </div>
+              <div>
+                <h4>결제여부</h4>
+                <div id="paymentSettings" class="tag-list editable-tags"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="work-panel">
+            <div class="section-heading"><div><p class="eyebrow">이 현장 전용</p><h3><span id="laborProjectName"></span> 인건비 설정</h3></div></div>
+            <p class="settings-help">인력 이름과 1공수(하루) 단가를 따로 설정합니다. 다른 프로젝트에는 적용되지 않으며, 단가 변경은 앞으로 입력할 업무에만 적용됩니다. 기존 업무 금액은 그대로 유지됩니다.</p>
+            <div id="laborSettings" class="labor-settings"></div>
+          </section>
+          </fieldset>
+          <section class="work-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">구글시트 연결</p>
+                <h3>자동 저장 · 백업 설정</h3>
+              </div>
+              <span id="syncState" class="pill muted">로컬 저장</span>
+            </div>
+            <div class="sync-box">
+              <label>
+                <span>선택 프로젝트 구글시트 저장 URL</span>
+                <input id="syncEndpoint" type="url" placeholder="Apps Script 웹앱 URL" disabled>
+              </label>
+              <div class="form-actions">
+                <button class="secondary-btn" id="saveSyncButton" type="button">연결 저장</button>
+                <button class="secondary-btn" id="restoreSyncButton" type="button">구글시트 불러오기</button>
+                <button class="primary-btn" id="pushSyncButton" type="button">구글시트로 보내기</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="emptyStateTemplate">
+    <div class="empty-state">
+      <strong>표시할 항목이 없습니다</strong>
+      <span>등록 화면에서 새 항목을 저장하면 여기에 표시됩니다.</span>
+    </div>
+  </template>
+
+  <dialog id="administratorDialog" class="administrator-dialog" aria-labelledby="administratorDialogTitle">
+    <h2 id="administratorDialogTitle">관리자 확인</h2><p>대표님만 관리 설정을 변경할 수 있습니다. 15분 후 자동으로 잠깁니다.</p>
+    <form id="administratorLoginForm"><fieldset id="administratorLoginFields"><label for="administratorPassword">관리자 비밀번호</label><input id="administratorPassword" type="password" minlength="4" maxlength="128" autocomplete="current-password" required><button class="primary-btn" type="submit">관리자 확인</button></fieldset></form>
+    <p id="administratorStatus" role="status" aria-live="polite"></p><button class="secondary-btn" id="administratorCancel" type="button">닫기</button>
+  </dialog>
+
+  <script src="app-config.js?v=20261025-verified-endpoints"></script>
+  <script src="administrator-access.js?v=20261025-admin-settings"></script>
+  <script src="project-directory.js?v=20261016-connection-check"></script>
+  <script src="sheet-data.js"></script>
+  <script src="field-ui.js?v=20261025-project-settings"></script>
+  <script src="app.js?v=20261025-admin-settings-2"></script>
+</body>
+</html>
