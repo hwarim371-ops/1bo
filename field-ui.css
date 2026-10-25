@@ -199,7 +199,8 @@ body .compact-view[data-list-text-size] .table-summary-card :is(strong, span) { 
   body .compact-view[data-list-compact] .field-record-table { min-width: 0; }
   body .compact-view[data-list-compact] .field-record-table :is(th, td) { min-width: 0; padding: 4px 6px; }
   body .compact-view[data-list-compact] .field-record-table th { white-space: nowrap; }
-  body .compact-view[data-list-compact] .field-record-table .detail-process-cell { max-width: calc(var(--list-text-size) * 24); }
+  body .compact-view[data-list-compact] .field-record-table .detail-process-cell { min-width: calc(var(--list-text-size) * 12); max-width: calc(var(--list-text-size) * 24); }
+  body .compact-view[data-list-compact] .field-record-table td[data-label="부공정"] { white-space: normal; max-width: calc(var(--list-text-size) * 14); }
   body .compact-view[data-list-compact] .field-record-table .sync-record-status { min-width: 0; gap: 3px; }
   body .compact-view[data-list-compact] .field-record-table .row-actions { flex-wrap: nowrap; gap: 4px; }
   body .compact-view[data-list-compact] .field-record-table .row-actions button { min-height: 28px; padding: 4px 6px; }
