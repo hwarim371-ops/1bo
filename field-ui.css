@@ -16,6 +16,9 @@ body { background: #f6f3ed; font-size: 1rem; line-height: 1.5; }
 .work-panel { background: #fffdf8; }
 button, a.secondary-btn, summary { touch-action: manipulation; }
 button:disabled { opacity: .6; cursor: not-allowed; }
+.project-settings-list > .process-card { display: grid; gap: 10px; min-width: 0; }
+.project-settings-list > .process-card > header, .project-settings-list > .process-card > p { margin: 0; }
+.project-settings-list > .process-card > a.secondary-btn { display: flex; align-items: center; justify-content: center; max-width: 100%; text-align: center; text-decoration: none; overflow-wrap: anywhere; }
 button:focus-visible, summary:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid #245ca6; outline-offset: 3px;
 }
