@@ -201,7 +201,9 @@ body .compact-view[data-list-text-size] .table-summary-card :is(strong, span) { 
   body .compact-view[data-list-compact] .field-record-table th { white-space: nowrap; }
   body .compact-view[data-list-compact] .field-record-table .detail-process-cell { max-width: calc(var(--list-text-size) * 24); }
   body .compact-view[data-list-compact] .field-record-table .sync-record-status { min-width: 0; gap: 3px; }
+  body .compact-view[data-list-compact] .field-record-table .row-actions { flex-wrap: nowrap; gap: 4px; }
   body .compact-view[data-list-compact] .field-record-table .row-actions button { min-height: 28px; padding: 4px 6px; }
+  body .compact-view[data-list-compact] .field-record-table .contract-check-label { min-height: 28px; min-width: 28px; }
   body .compact-view[data-list-compact] .table-summary-card { padding: 6px 8px; }
 }
 @media (max-width: 700px) {
